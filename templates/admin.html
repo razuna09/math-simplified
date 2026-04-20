@@ -1,0 +1,498 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="card admin-hero">
+  <div>
+    <h2>Admin Dashboard</h2>
+    <p class="muted">Configure users, announcements, and maintenance in one place.</p>
+    <div class="admin-now-chip">
+      <span class="admin-now-label">Current time</span>
+      <strong id="adminNowClock">--</strong>
+    </div>
+    <div class="admin-actions-row">
+      <a class="btn btn-ghost small" href="{{ url_for('chat') }}">Back to Chat</a>
+    </div>
+  </div>
+  <div class="admin-hero-metrics">
+    <div class="admin-metric">
+      <span>Total users</span>
+      <strong>{{ all_users_count }}</strong>
+    </div>
+    <div class="admin-metric">
+      <span>Filtered</span>
+      <strong>{{ filtered_users_count }}</strong>
+    </div>
+    <div class="admin-metric">
+      <span>Server UTC</span>
+      <strong>{{ admin_now_utc[:16] if admin_now_utc else '-' }}</strong>
+    </div>
+  </div>
+</section>
+
+<section class="admin-layout">
+  <div class="card admin-card">
+    <h3>User Operations</h3>
+    <p class="muted">Create student accounts and run account actions quickly.</p>
+
+    <form method="post" action="{{ url_for('admin_create_account') }}" class="admin-form-block" onsubmit="return window.__validateCreate && __validateCreate(this)">
+      <h4>Create Account</h4>
+      <label>Username</label>
+      <input name="username" required>
+      <label>Password</label>
+      <input type="password" name="password" required>
+      <label>Confirm Password</label>
+      <input type="password" name="confirm_password" required>
+      <button class="btn" type="submit">Create Account</button>
+    </form>
+
+    <form id="accountActionForm" method="post" class="admin-form-block admin-form-sep">
+      <h4>Account Actions</h4>
+      <label>Username</label>
+      <input id="actionUsername" name="username" list="userSuggestions" required placeholder="Type username or pick from table">
+      <datalist id="userSuggestions">
+        {% for uname in username_suggestions %}
+        <option value="{{ uname }}"></option>
+        {% endfor %}
+      </datalist>
+
+      <label>New Password (required for reset only)</label>
+      <input id="actionNewPassword" type="password" name="new_password" placeholder="At least 8 chars, upper/lower/number/symbol">
+
+      <div class="admin-actions-row">
+        <button class="btn" type="submit" data-action="reset" formaction="{{ url_for('admin_reset_password') }}">Reset Password</button>
+        <button class="btn btn-ghost" type="submit" data-action="lock" formaction="{{ url_for('admin_lock_account') }}">Lock</button>
+        <button class="btn btn-ghost" type="submit" data-action="unlock" formaction="{{ url_for('admin_unlock_account') }}">Unlock</button>
+        <button class="btn btn-danger" type="submit" data-action="delete" formaction="{{ url_for('admin_delete_account') }}">Delete</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="card admin-card admin-users-card">
+    <div class="admin-users-head">
+      <div>
+        <h3>Users</h3>
+        <p class="muted">Showing {{ users|length }} of {{ filtered_users_count }}{% if user_query %} matches{% endif %}.</p>
+      </div>
+      <form method="get" class="admin-search-form">
+        <input name="q" placeholder="Search username or session id" value="{{ user_query or '' }}">
+        {% if show_all_users %}
+        <input type="hidden" name="show" value="all">
+        {% endif %}
+        <button class="btn btn-ghost small" type="submit">Search</button>
+        {% if user_query %}
+        <a class="btn btn-ghost small" href="{{ url_for('admin_dashboard') }}">Clear</a>
+        {% endif %}
+      </form>
+    </div>
+
+    <div class="admin-users-toolbar">
+      {% if has_more_users %}
+      <a class="btn btn-ghost small" href="{{ url_for('admin_dashboard', q=user_query, show='all') }}">Show all users</a>
+      {% endif %}
+      {% if show_all_users and filtered_users_count > default_user_limit %}
+      <a class="btn btn-ghost small" href="{{ url_for('admin_dashboard', q=user_query) }}">Show first {{ default_user_limit }}</a>
+      {% endif %}
+    </div>
+
+    <div class="admin-table-wrap">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Username</th>
+            <th>Session</th>
+            <th>Status</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for user in users %}
+          <tr>
+            <td>{{ user['RowKey'] }}</td>
+            <td class="muted">{{ user['session_id'] }}</td>
+            <td>
+              {% if user['locked'] %}
+              <span class="pill">Locked</span>
+              {% else %}
+              <span class="pill">Active</span>
+              {% endif %}
+            </td>
+            <td class="actions">
+              <button class="btn btn-ghost small fill-target-btn" type="button" data-username="{{ user['RowKey'] }}">Use</button>
+              {% if user['locked'] %}
+              <form method="post" action="{{ url_for('admin_unlock_account') }}">
+                <input type="hidden" name="username" value="{{ user['RowKey'] }}">
+                <button class="btn btn-ghost small" type="submit">Unlock</button>
+              </form>
+              {% else %}
+              <form method="post" action="{{ url_for('admin_lock_account') }}">
+                <input type="hidden" name="username" value="{{ user['RowKey'] }}">
+                <button class="btn btn-ghost small" type="submit">Lock</button>
+              </form>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+          {% if not users %}
+          <tr>
+            <td colspan="4" class="muted">No users found for this search.</td>
+          </tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section class="admin-layout">
+  <div class="card admin-card">
+    <h3>Announcement</h3>
+    <p class="muted">Publish a login-page announcement with optional schedule window.</p>
+    <form id="announcementForm" method="post" action="{{ url_for('admin_save_announcement') }}" class="admin-form-block">
+      <input class="tz-offset-input" type="hidden" name="tz_offset_minutes" value="0">
+      <input class="tz-name-input" type="hidden" name="tz_name" value="">
+      <label>Title</label>
+      <input name="title" value="{{ ann_title or '' }}">
+      <label>Message</label>
+      <textarea name="message" rows="4">{{ ann_message or '' }}</textarea>
+      <label>Level</label>
+      <select name="level">
+        {% set lvl = ann_level or 'info' %}
+        <option value="info" {% if lvl=='info' %}selected{% endif %}>Info</option>
+        <option value="success" {% if lvl=='success' %}selected{% endif %}>Success</option>
+        <option value="warn" {% if lvl=='warn' %}selected{% endif %}>Warning</option>
+        <option value="error" {% if lvl=='error' %}selected{% endif %}>Error</option>
+      </select>
+      <div class="checkbox">
+        <input id="annActive" type="checkbox" name="active" value="1" {% if ann_active %}checked{% endif %}>
+        <label for="annActive">Enable announcement</label>
+      </div>
+      <div class="checkbox">
+        <input id="annSched" type="checkbox" name="scheduled_enabled" value="1" {% if ann_scheduled_enabled %}checked{% endif %}>
+        <label for="annSched">Use schedule window</label>
+      </div>
+      <div class="checkbox">
+        <input id="annRecurring" type="checkbox" name="recurring_enabled" value="1" {% if ann_recurring_enabled %}checked{% endif %}>
+        <label for="annRecurring">Repeat weekly (selected days)</label>
+      </div>
+      <div class="admin-weekday-grid ann-weekday-grid">
+        {% set ann_days = ann_weekdays or [] %}
+        {% set day_items = [('0','Mon'),('1','Tue'),('2','Wed'),('3','Thu'),('4','Fri'),('5','Sat'),('6','Sun')] %}
+        {% for day_value, day_label in day_items %}
+        <label class="weekday-pill">
+          <input type="checkbox" name="weekdays" value="{{ day_value }}" {% if day_value|int in ann_days %}checked{% endif %}>
+          <span>{{ day_label }}</span>
+        </label>
+        {% endfor %}
+      </div>
+      <div class="admin-time-grid">
+        <div>
+          <label>Recurring start time</label>
+          <input type="time" name="recurring_start_time" value="{{ ann_recurring_start_time or '' }}">
+        </div>
+        <div>
+          <label>Recurring end time</label>
+          <input type="time" name="recurring_end_time" value="{{ ann_recurring_end_time or '' }}">
+        </div>
+      </div>
+      <p class="muted">If both times are empty, selected days are active for the full day.</p>
+      <div class="admin-date-grid">
+        <div>
+          <label>Start (local time)</label>
+          <input type="datetime-local" name="start_at" data-utc="{{ ann_start_at or '' }}">
+        </div>
+        <div>
+          <label>End (local time)</label>
+          <input type="datetime-local" name="end_at" data-utc="{{ ann_end_at or '' }}">
+        </div>
+      </div>
+      <div class="admin-actions-row">
+        <button class="btn" type="submit">Save Announcement</button>
+      </div>
+    </form>
+    <form method="post" action="{{ url_for('admin_clear_announcement') }}">
+      <button class="btn btn-ghost" type="submit">Clear Announcement</button>
+    </form>
+  </div>
+
+  <div class="card admin-card">
+    <h3>Maintenance</h3>
+    <p class="muted">Show maintenance page for non-admin users, instantly or by schedule.</p>
+    <form id="maintenanceForm" method="post" action="{{ url_for('admin_save_maintenance') }}" class="admin-form-block">
+      <input class="tz-offset-input" type="hidden" name="tz_offset_minutes" value="0">
+      <input class="tz-name-input" type="hidden" name="tz_name" value="">
+      <div class="checkbox">
+        <input id="mActive" type="checkbox" name="active" value="1" {% if maint_active %}checked{% endif %}>
+        <label for="mActive">Enable maintenance mode</label>
+      </div>
+      <div class="checkbox">
+        <input id="mSched" type="checkbox" name="scheduled_enabled" value="1" {% if maint_scheduled_enabled %}checked{% endif %}>
+        <label for="mSched">Use schedule window</label>
+      </div>
+      <div class="checkbox">
+        <input id="mRecurring" type="checkbox" name="recurring_enabled" value="1" {% if maint_recurring_enabled %}checked{% endif %}>
+        <label for="mRecurring">Repeat weekly (selected days)</label>
+      </div>
+      <div class="admin-weekday-grid maint-weekday-grid">
+        {% set maint_days = maint_weekdays or [] %}
+        {% set day_items = [('0','Mon'),('1','Tue'),('2','Wed'),('3','Thu'),('4','Fri'),('5','Sat'),('6','Sun')] %}
+        {% for day_value, day_label in day_items %}
+        <label class="weekday-pill">
+          <input type="checkbox" name="weekdays" value="{{ day_value }}" {% if day_value|int in maint_days %}checked{% endif %}>
+          <span>{{ day_label }}</span>
+        </label>
+        {% endfor %}
+      </div>
+      <div class="admin-time-grid">
+        <div>
+          <label>Recurring start time</label>
+          <input type="time" name="recurring_start_time" value="{{ maint_recurring_start_time or '' }}">
+        </div>
+        <div>
+          <label>Recurring end time</label>
+          <input type="time" name="recurring_end_time" value="{{ maint_recurring_end_time or '' }}">
+        </div>
+      </div>
+      <p class="muted">If both times are empty, selected days are active for the full day.</p>
+      <div class="admin-date-grid">
+        <div>
+          <label>Start (local time)</label>
+          <input type="datetime-local" name="start_at" data-utc="{{ maint_start_at or '' }}">
+        </div>
+        <div>
+          <label>End (local time)</label>
+          <input type="datetime-local" name="end_at" data-utc="{{ maint_end_at or '' }}">
+        </div>
+      </div>
+      <label>Message</label>
+      <textarea name="message" rows="3">{{ maint_message or '' }}</textarea>
+      <div class="admin-actions-row">
+        <button class="btn" type="submit">Save Maintenance</button>
+        <a class="btn btn-ghost" href="{{ url_for('admin_error_preview') }}" target="_blank">Preview</a>
+      </div>
+    </form>
+  </div>
+</section>
+
+<section class="admin-layout admin-layout-single">
+  <div class="card admin-card">
+    <h3>Webhook Environment</h3>
+    <p class="muted">Choose where chat messages are sent.</p>
+    <form method="post" action="{{ url_for('admin_save_webhook') }}" class="admin-form-block">
+      <div class="checkbox"><input id="envTest" type="radio" name="env" value="test" {% if webhook_env=='test' %}checked{% endif %}><label for="envTest">Test</label></div>
+      <div class="muted admin-url">{{ webhook_test_url }}</div>
+      <div class="checkbox"><input id="envProd" type="radio" name="env" value="prod" {% if webhook_env=='prod' %}checked{% endif %}><label for="envProd">Production</label></div>
+      <div class="muted admin-url">{{ webhook_prod_url }}</div>
+      <div class="muted">Current: <code>{{ webhook_current_url }}</code></div>
+      <button class="btn" type="submit">Save</button>
+    </form>
+  </div>
+</section>
+
+<script>
+  document.body.classList.add('admin-page');
+
+  const serverAdminTimezone = "{{ admin_timezone or '' }}";
+  function getPreferredAdminTimezone(){
+    return window.__adminTimezone || serverAdminTimezone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  }
+
+  function updateAdminClock(){
+    const el = document.getElementById('adminNowClock');
+    if(!el){ return; }
+    const now = new Date();
+    const tz = getPreferredAdminTimezone();
+    let text = '';
+    try{
+      text = now.toLocaleString(undefined, {
+        year: 'numeric',
+        month: 'short',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: true,
+        timeZone: tz,
+        timeZoneName: 'short'
+      });
+    }catch(_){
+      text = now.toLocaleString();
+    }
+    el.textContent = text;
+  }
+  updateAdminClock();
+  setInterval(updateAdminClock, 1000);
+
+  function toLocalInputValue(iso){
+    if(!iso){ return ''; }
+    const d = new Date(iso);
+    if(Number.isNaN(d.getTime())){ return ''; }
+    const tz = getPreferredAdminTimezone();
+    try{
+      const parts = new Intl.DateTimeFormat('en-CA', {
+        timeZone: tz,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false
+      }).formatToParts(d).reduce((acc, p)=>{ acc[p.type] = p.value; return acc; }, {});
+      return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
+    }catch(_){
+      const p = (n)=>String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+    }
+  }
+
+  document.querySelectorAll('input[type="datetime-local"][data-utc]').forEach((el)=>{
+    if(!el.value && el.dataset.utc){ el.value = toLocalInputValue(el.dataset.utc); }
+  });
+  function getTimezoneOffsetMinutesForZone(tz){
+    try{
+      const now = new Date();
+      const parts = new Intl.DateTimeFormat('en-US', {
+        timeZone: tz,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false
+      }).formatToParts(now).reduce((acc, p)=>{ acc[p.type] = p.value; return acc; }, {});
+      const zoneAsUtc = Date.UTC(
+        Number(parts.year),
+        Number(parts.month) - 1,
+        Number(parts.day),
+        Number(parts.hour),
+        Number(parts.minute),
+        Number(parts.second)
+      );
+      // Match JS getTimezoneOffset() semantics: UTC - local
+      return Math.round((now.getTime() - zoneAsUtc) / 60000);
+    }catch(_){
+      return new Date().getTimezoneOffset();
+    }
+  }
+  function syncScheduleTimezoneFields(){
+    const tz = getPreferredAdminTimezone();
+    const off = getTimezoneOffsetMinutesForZone(tz);
+    document.querySelectorAll('.tz-offset-input').forEach((el)=>{
+      el.value = String(off);
+    });
+    document.querySelectorAll('.tz-name-input').forEach((el)=>{
+      el.value = tz;
+    });
+  }
+  syncScheduleTimezoneFields();
+
+  function bindRecurringWeekdays(formId, recurringId, gridSelector){
+    const form = document.getElementById(formId);
+    const recurring = document.getElementById(recurringId);
+    const grid = form ? form.querySelector(gridSelector) : null;
+    if(!form || !recurring || !grid){ return; }
+    const dayChecks = Array.from(grid.querySelectorAll('input[name="weekdays"]'));
+    const recurringStartInput = form.querySelector('input[name="recurring_start_time"]');
+    const recurringEndInput = form.querySelector('input[name="recurring_end_time"]');
+    function toMinutes(v){
+      const s = (v || '').trim();
+      if(!s || s.indexOf(':') < 0){ return null; }
+      const [h, m] = s.split(':');
+      const hh = Number(h);
+      const mm = Number(m);
+      if(Number.isNaN(hh) || Number.isNaN(mm)){ return null; }
+      return (hh * 60) + mm;
+    }
+    const sync = ()=>{
+      const on = !!recurring.checked;
+      grid.classList.toggle('is-disabled', !on);
+      dayChecks.forEach((cb)=>{ cb.disabled = !on; });
+      if(recurringStartInput){ recurringStartInput.disabled = !on; }
+      if(recurringEndInput){ recurringEndInput.disabled = !on; }
+    };
+    sync();
+    recurring.addEventListener('change', sync);
+    form.addEventListener('submit', (e)=>{
+      const scheduleEnabled = !!form.querySelector('input[name="scheduled_enabled"]')?.checked;
+      const startAt = (form.querySelector('input[name="start_at"]')?.value || '').trim();
+      const endAt = (form.querySelector('input[name="end_at"]')?.value || '').trim();
+      if(scheduleEnabled && !recurring.checked && !startAt && !endAt){
+        e.preventDefault();
+        alert('Set start/end date-time, or disable schedule window.');
+        return;
+      }
+      if(recurring.checked && !dayChecks.some((cb)=>cb.checked)){
+        e.preventDefault();
+        alert('Select at least one weekday, or disable weekly recurrence.');
+        return;
+      }
+      if(recurring.checked){
+        const s = toMinutes(recurringStartInput?.value || '');
+        const t = toMinutes(recurringEndInput?.value || '');
+        if(s !== null && t !== null && s === t){
+          e.preventDefault();
+          alert('Recurring start and end time cannot be the same.');
+        }
+      }
+    });
+  }
+
+  bindRecurringWeekdays('announcementForm', 'annRecurring', '.ann-weekday-grid');
+  bindRecurringWeekdays('maintenanceForm', 'mRecurring', '.maint-weekday-grid');
+  window.addEventListener('admin-timezone-updated', ()=>{
+    updateAdminClock();
+    syncScheduleTimezoneFields();
+  });
+
+  window.__validateCreate = function(form){
+    const pw = form.querySelector('input[name="password"]')?.value || '';
+    const cpw = form.querySelector('input[name="confirm_password"]')?.value || '';
+    if(pw !== cpw){ alert('Passwords do not match'); return false; }
+    if(pw.length < 8){ alert('Password must be at least 8 characters.'); return false; }
+    return true;
+  };
+
+  let actionIntent = '';
+  const actionForm = document.getElementById('accountActionForm');
+  if(actionForm){
+    const userInput = document.getElementById('actionUsername');
+    const pwInput = document.getElementById('actionNewPassword');
+    actionForm.querySelectorAll('button[type="submit"]').forEach((btn)=>{
+      btn.addEventListener('click', ()=>{ actionIntent = btn.dataset.action || ''; });
+    });
+    actionForm.addEventListener('submit', (e)=>{
+      const username = (userInput?.value || '').trim();
+      const newPw = (pwInput?.value || '').trim();
+      if(!username){
+        e.preventDefault();
+        alert('Username is required.');
+        return;
+      }
+      if(actionIntent === 'reset'){
+        if(newPw.length < 8){
+          e.preventDefault();
+          alert('New password must be at least 8 characters.');
+          return;
+        }
+      }
+      if(actionIntent === 'delete'){
+        if(!confirm(`Delete account "${username}" and all chats?`)){
+          e.preventDefault();
+          return;
+        }
+      }
+    });
+  }
+
+  document.querySelectorAll('.fill-target-btn').forEach((btn)=>{
+    btn.addEventListener('click', ()=>{
+      const user = btn.getAttribute('data-username') || '';
+      const target = document.getElementById('actionUsername');
+      if(target){
+        target.value = user;
+        target.focus();
+      }
+    });
+  });
+</script>
+{% endblock %}

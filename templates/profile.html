@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h3>Edit Profile</h3>
+  <form method="post">
+    <div class="profile">
+      <img src="{{ (user and user.get('avatar_url')) or 'https://avatars.githubusercontent.com/u/9919?s=64&v=4' }}" class="avatar" alt="avatar">
+      <div class="profile-fields">
+        <label>Display name</label>
+        <input name="display_name" value="{{ (user and user.get('display_name')) or username }}">
+        <label>Bio</label>
+        <textarea name="bio" rows="3">{{ (user and user.get('bio')) or '' }}</textarea>
+        <label>Avatar URL</label>
+        <input name="avatar_url" value="{{ (user and user.get('avatar_url')) or '' }}">
+        <button type="submit" class="btn">Save</button>
+      </div>
+    </div>
+  </form>
+</div>
+{% endblock %}

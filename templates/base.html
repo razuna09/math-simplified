@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ (title or "MathSimplified AI") ~ " " ~ (app_version or '') }}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=Space+Grotesk:wght@400;500;600;700&display=swap">
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+  </head>
+  <body>
+    <nav class="topbar">
+      <div class="brand">MathSimplified AI <span class="muted" style="font-weight:500">{{ app_version }}</span></div>
+      <div class="nav-actions">
+        {% if is_logged_in %}
+        <button id="profileToggle" class="profile-pill" type="button" title="Open profile settings" aria-expanded="false" aria-controls="profileDrawer">
+          <span class="profile-pill-avatar">{{ (current_username or "U")[0]|upper }}</span>
+          <span class="profile-pill-text">
+            <strong>{{ current_username }}</strong>
+            <small>{{ 'Admin' if is_admin_user else 'Profile' }}</small>
+          </span>
+        </button>
+        {% endif %}
+        {% if is_logged_in %}
+        <a class="btn btn-ghost" href="{{ url_for('logout') }}">Logout</a>
+        {% endif %}
+      </div>
+    </nav>
+
+    {% if is_logged_in %}
+    <div id="profileBackdrop" class="drawer-backdrop" hidden></div>
+    <aside id="profileDrawer" class="profile-drawer" aria-hidden="true">
+      <div class="drawer-head">
+        <div class="drawer-id">
+          <span class="drawer-avatar">{{ (current_username or "U")[0]|upper }}</span>
+          <div>
+            <h3>{{ current_username }}</h3>
+            <p class="muted">{{ 'Admin settings' if is_admin_user else 'Account settings' }}</p>
+          </div>
+        </div>
+        <button id="profileClose" class="btn btn-ghost small" type="button">{{ 'Back to Chat' if request.endpoint == 'admin_dashboard' else 'Close' }}</button>
+      </div>
+
+      <div class="drawer-card">
+        <div class="drawer-stat">
+          <span class="muted">Username</span>
+          <strong>{{ current_username }}</strong>
+          <small class="muted">Only admins can rename accounts.</small>
+        </div>
+        <div class="drawer-stat">
+          <span class="muted">Session ID</span>
+          <code>{{ current_session_id or "-" }}</code>
+        </div>
+      </div>
+
+      <div class="drawer-card drawer-settings">
+        <h4>Settings</h4>
+        <div class="settings-grid">
+          <button id="settingThemeToggle" class="btn btn-ghost small" type="button">Theme</button>
+          <button id="settingWideToggle" class="btn btn-ghost small" type="button">Wide Mode</button>
+          <button id="settingPhoneViewToggle" class="btn btn-ghost small" type="button">Phone View</button>
+          <button id="settingDeleteChatBtn" class="btn btn-ghost small full" type="button">Delete Chat</button>
+          {% if is_admin_user %}
+          <a class="btn btn-ghost small full" href="{{ url_for('admin_dashboard') }}">Profile Database Configuration</a>
+          {% endif %}
+        </div>
+        {% if is_admin_user %}
+        <div class="admin-timezone-wrap">
+          <label for="adminTimezoneSelect">Default admin timezone</label>
+          <select id="adminTimezoneSelect">
+            <option value="UTC">UTC</option>
+            <option value="Asia/Kuala_Lumpur">Asia/Kuala_Lumpur</option>
+            <option value="Asia/Singapore">Asia/Singapore</option>
+            <option value="Asia/Jakarta">Asia/Jakarta</option>
+            <option value="Asia/Bangkok">Asia/Bangkok</option>
+            <option value="Asia/Tokyo">Asia/Tokyo</option>
+            <option value="Asia/Seoul">Asia/Seoul</option>
+            <option value="Australia/Sydney">Australia/Sydney</option>
+            <option value="Europe/London">Europe/London</option>
+            <option value="Europe/Paris">Europe/Paris</option>
+            <option value="Europe/Berlin">Europe/Berlin</option>
+            <option value="Europe/Istanbul">Europe/Istanbul</option>
+            <option value="America/New_York">America/New_York</option>
+            <option value="America/Chicago">America/Chicago</option>
+            <option value="America/Denver">America/Denver</option>
+            <option value="America/Los_Angeles">America/Los_Angeles</option>
+            <option value="America/Phoenix">America/Phoenix</option>
+            <option value="America/Toronto">America/Toronto</option>
+            <option value="Pacific/Auckland">Pacific/Auckland</option>
+          </select>
+          <button id="saveAdminTimezoneBtn" class="btn btn-ghost small" type="button">Save Timezone</button>
+          <p id="adminTimezoneNote" class="muted drawer-note">Used as default for admin schedule times and admin clock.</p>
+        </div>
+        {% endif %}
+        <p id="phoneViewNote" class="muted drawer-note" hidden>Phone view is on: graph preview and extended calculator tools are hidden.</p>
+        <p class="muted drawer-note">Chat controls are available on chat page only.</p>
+      </div>
+
+      {% if not is_admin_user %}
+      <form method="post" action="{{ url_for('profile_change_password') }}" class="drawer-form" id="passwordForm">
+        <h4>Change Password</h4>
+        <label>Current password</label>
+        <input type="password" name="current_password" autocomplete="current-password" required>
+
+        <label>New password</label>
+        <input type="password" name="new_password" id="newPasswordInput" autocomplete="new-password" required>
+
+        <label>Confirm new password</label>
+        <input type="password" name="confirm_password" id="confirmPasswordInput" autocomplete="new-password" required>
+
+        <div class="password-meter" id="passwordMeter" aria-live="polite">Strength: -</div>
+        <p class="muted drawer-note">Use at least 8 characters with uppercase, lowercase, number, and one of @ $ ! % * ? &.</p>
+        <button type="submit" class="btn">Update Password</button>
+      </form>
+      {% endif %}
+    </aside>
+    {% endif %}
+
+    <main class="container">
+      {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        <div class="flash-wrap">
+          {% for category, message in messages %}
+            <div class="flash {{ category }}">{{ message }}</div>
+          {% endfor %}
+        </div>
+      {% endif %}
+      {% endwith %}
+      {% block content %}{% endblock %}
+    </main>
+
+    <script>
+      (function(){
+        const key = 'theme';
+        const el = document.documentElement;
+        const userKey = "{{ current_username or '' }}";
+        const phoneKey = userKey ? `phone_view:${userKey}` : 'phone_view';
+        const adminTzKey = userKey ? `admin_timezone:${userKey}` : 'admin_timezone';
+        const isAdminUser = {{ 'true' if is_admin_user else 'false' }};
+        const serverAdminTimezone = "{{ admin_timezone or '' }}";
+        function applyTheme(t){ el.setAttribute('data-theme', t); }
+        function applyPhoneView(on){
+          document.body.classList.toggle('phone-view', !!on);
+        }
+        function setAdminTimezone(tz){
+          if(!tz){ return; }
+          window.__adminTimezone = tz;
+          try{ localStorage.setItem(adminTzKey, tz); }catch(_){}
+          window.dispatchEvent(new CustomEvent('admin-timezone-updated', { detail: { timezone: tz } }));
+        }
+        const saved = localStorage.getItem(key);
+        const savedPhone = localStorage.getItem(phoneKey);
+        applyTheme(saved || 'dark');
+        applyPhoneView(savedPhone === '1'); // default desktop when no setting exists
+        if(isAdminUser){
+          const initialTz = serverAdminTimezone || localStorage.getItem(adminTzKey) || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+          setAdminTimezone(initialTz);
+        }
+        window.addEventListener('DOMContentLoaded', function(){
+          const btn = document.getElementById('themeToggle');
+          const settingBtn = document.getElementById('settingThemeToggle');
+          const phoneBtn = document.getElementById('settingPhoneViewToggle');
+          const phoneNote = document.getElementById('phoneViewNote');
+          const adminTimezoneSelect = document.getElementById('adminTimezoneSelect');
+          const saveAdminTimezoneBtn = document.getElementById('saveAdminTimezoneBtn');
+          const adminTimezoneNote = document.getElementById('adminTimezoneNote');
+          function label(){
+            const txt = (el.getAttribute('data-theme')==='dark') ? 'Light' : 'Dark';
+            if(btn){ btn.textContent = txt; }
+            if(settingBtn){ settingBtn.textContent = txt; }
+            const on = document.body.classList.contains('phone-view');
+            if(phoneBtn){ phoneBtn.textContent = on ? 'Desktop View' : 'Phone View'; }
+            if(phoneNote){ phoneNote.hidden = !on; }
+          }
+          function ensureTimezoneOption(selectEl, tz){
+            if(!selectEl || !tz){ return; }
+            const has = Array.from(selectEl.options).some((o)=>o.value === tz);
+            if(!has){
+              const opt = document.createElement('option');
+              opt.value = tz;
+              opt.textContent = tz;
+              selectEl.appendChild(opt);
+            }
+          }
+          function toggleTheme(){
+            const cur = el.getAttribute('data-theme') || 'dark';
+            const next = (cur==='dark') ? 'light' : 'dark';
+            applyTheme(next); localStorage.setItem(key, next); label();
+          }
+          function togglePhoneView(){
+            const next = !document.body.classList.contains('phone-view');
+            applyPhoneView(next);
+            localStorage.setItem(phoneKey, next ? '1' : '0');
+            if(next){ document.body.classList.remove('calc-extended'); }
+            label();
+          }
+          async function saveAdminTimezone(){
+            if(!adminTimezoneSelect){ return; }
+            const tz = (adminTimezoneSelect.value || '').trim();
+            if(!tz){ return; }
+            if(adminTimezoneNote){ adminTimezoneNote.textContent = 'Saving timezone...'; }
+            try{
+              let res = await fetch('{{ url_for("admin_save_timezone_preference") }}', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ timezone: tz })
+              });
+              if(!res.ok){
+                // Fallback for environments with stricter JSON handling/proxies
+                const fd = new FormData();
+                fd.append('timezone', tz);
+                res = await fetch('{{ url_for("admin_save_timezone_preference") }}', {
+                  method: 'POST',
+                  body: fd
+                });
+              }
+              const data = await res.json().catch(async ()=>{
+                const txt = await res.text().catch(()=> '');
+                return { ok: false, error: txt || 'Invalid server response' };
+              });
+              if(!res.ok || !data.ok){
+                throw new Error(data.error || 'Save failed');
+              }
+              setAdminTimezone(data.timezone || tz);
+              if(adminTimezoneNote){ adminTimezoneNote.textContent = `Saved: ${data.timezone || tz}`; }
+            }catch(err){
+              if(adminTimezoneNote){ adminTimezoneNote.textContent = `Failed to save timezone: ${err.message || 'unknown error'}`; }
+            }
+          }
+          label();
+          if(isAdminUser && adminTimezoneSelect){
+            const tz = window.__adminTimezone || serverAdminTimezone || localStorage.getItem(adminTzKey) || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+            ensureTimezoneOption(adminTimezoneSelect, tz);
+            adminTimezoneSelect.value = tz;
+          }
+          if(btn){ btn.addEventListener('click', toggleTheme); }
+          if(settingBtn){ settingBtn.addEventListener('click', toggleTheme); }
+          if(phoneBtn){ phoneBtn.addEventListener('click', togglePhoneView); }
+          if(saveAdminTimezoneBtn){ saveAdminTimezoneBtn.addEventListener('click', saveAdminTimezone); }
+        });
+      })();
+
+      (function(){
+        const openBtn = document.getElementById('profileToggle');
+        const closeBtn = document.getElementById('profileClose');
+        const drawer = document.getElementById('profileDrawer');
+        const backdrop = document.getElementById('profileBackdrop');
+        const newPw = document.getElementById('newPasswordInput');
+        const confirmPw = document.getElementById('confirmPasswordInput');
+        const meter = document.getElementById('passwordMeter');
+        const adminChatHref = "{{ url_for('chat') if request.endpoint == 'admin_dashboard' else '' }}";
+        if(!openBtn || !drawer || !backdrop){ return; }
+
+        function setDrawer(open){
+          drawer.setAttribute('aria-hidden', open ? 'false' : 'true');
+          openBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+          backdrop.hidden = !open;
+          document.body.classList.toggle('drawer-open', open);
+        }
+
+        function scorePassword(value){
+          let s = 0;
+          if((value || '').length >= 8){ s += 1; }
+          if(/[A-Z]/.test(value)){ s += 1; }
+          if(/[a-z]/.test(value)){ s += 1; }
+          if(/[0-9]/.test(value)){ s += 1; }
+          if(/[@$!%*?&]/.test(value)){ s += 1; }
+          return s;
+        }
+
+        function updateMeter(){
+          if(!meter || !newPw){ return; }
+          const score = scorePassword(newPw.value || '');
+          const labels = ['Very weak', 'Weak', 'Fair', 'Good', 'Strong', 'Excellent'];
+          meter.textContent = 'Strength: ' + labels[score];
+          meter.setAttribute('data-score', String(score));
+          if(confirmPw){
+            confirmPw.setCustomValidity(confirmPw.value && confirmPw.value !== newPw.value ? 'Passwords do not match' : '');
+          }
+        }
+
+        openBtn.addEventListener('click', ()=> setDrawer(drawer.getAttribute('aria-hidden') !== 'false'));
+        if(closeBtn){
+          closeBtn.addEventListener('click', ()=>{
+            if(adminChatHref){
+              window.location.href = adminChatHref;
+              return;
+            }
+            setDrawer(false);
+          });
+        }
+        backdrop.addEventListener('click', ()=> setDrawer(false));
+        document.addEventListener('keydown', (e)=>{ if(e.key === 'Escape'){ setDrawer(false); } });
+        if(newPw){ newPw.addEventListener('input', updateMeter); }
+        if(confirmPw){ confirmPw.addEventListener('input', updateMeter); }
+      })();
+    </script>
+  </body>
+  
+</html>

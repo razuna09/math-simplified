@@ -1,0 +1,245 @@
+﻿{% extends "base.html" %}
+{% block content %}
+<style>
+  /* Limit whole-page scroll on the chat view only */
+  body{ overflow:hidden; }
+</style>
+<div class="chatgpt">
+  <div class="chat-title">Second Supervisor AI</div>
+  <div id="messages" class="messages">
+    {% for m in messages %}
+      {% set role = 'assistant' if m['sender']=='assistant' else 'user' %}
+      <div class="msg {{ role }}" data-rk="{{ m.get('RowKey','') }}">
+        <div class="avatar">{{ 'A' if role=='assistant' else 'Y' }}</div>
+        <div class="bubble">
+          <div class="meta">{{ m['sender'] }} - {{ m['created_at'] }}</div>
+          <div class="text">{{ m['text'] }}</div>
+        </div>
+      </div>
+    {% endfor %}
+  </div>
+
+  <div class="chat-actions-wrap">
+    <form id="clearForm" method="post" action="{{ url_for('chat_clear') }}">
+      <button type="submit" class="btn btn-ghost" id="clearBtn" title="Delete all messages">Delete All</button>
+    </form>
+  </div>
+
+  <form id="sendForm" class="composer" method="post" action="{{ url_for('chat_send') }}">
+    <textarea name="text" id="msgBox" rows="3" placeholder="Message Second Supervisor AI"></textarea>
+    <button type="submit" class="btn">Send</button>
+  </form>
+</div>
+
+<script>
+  // Render KaTeX math within a given element (bubble or container)
+  function renderMath(el){
+    if (!window.renderMathInElement || !el) return;
+    try {
+        renderMathInElement(el, {
+            delimiters: [
+                {left: "$$", right: "$$", display: true},
+                {left: "\\[", right: "\\]", display: true},
+                {left: "$",  right: "$",  display: false},
+                {left: "\\(", right: "\\)", display: false},
+            ],
+            throwOnError: false
+        });
+    } catch (_) { /* noop */ }
+  }
+
+  // Apply KaTeX rendering to all server-rendered messages on page load
+  window.addEventListener('DOMContentLoaded', () => {
+    const messagesEl = document.getElementById('messages');
+    if (messagesEl) {
+        renderMath(messagesEl);
+    }
+  });
+
+  // Confirm before clearing all messages
+  const clearForm = document.getElementById('clearForm');
+  if(clearForm){
+    clearForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const ok = confirm('Delete all messages in this chat?');
+        if(!ok) return;
+
+        try {
+            const response = await fetch(clearForm.action, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            });
+
+            if(response.ok) {
+                // Clear messages from the UI
+                const messagesEl = document.getElementById('messages');
+                messagesEl.innerHTML = '';
+                alert('All messages and AI responses cleared.');
+            } else {
+                alert('Failed to clear messages.');
+            }
+        } catch (error) {
+            console.error('Error clearing messages:', error);
+            alert('An error occurred while clearing messages.');
+        }
+    });
+  }
+
+  // Initialize cursor to the last server-rendered message to avoid duplicates on first poll
+  let lastSeen = "{{ messages[-1]['created_at'] if messages else '' }}";
+
+  const messagesEl = document.getElementById('messages');
+  const form = document.getElementById('sendForm');
+  const box = document.getElementById('msgBox');
+  const seen = new Set(Array.from(messagesEl.querySelectorAll('.msg[data-rk]')).map(n=>n.getAttribute('data-rk')).filter(Boolean));
+  const pendingTemps = [];
+
+  function atBottom(){
+    return (messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight) < 120;
+  }
+
+  function fmtTime(iso) {
+    if (!iso) return '';
+    try {
+      const now = new Date();
+      const d = new Date(iso);
+      const diffMs = now - d;
+      const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+
+      if (diffDays === 0) {
+        return `Today at ${d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}`;
+      } else if (diffDays === 1) {
+        return `Yesterday at ${d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}`;
+      } else {
+        return d.toLocaleDateString(undefined, {
+          year: 'numeric', month: 'short', day: 'numeric',
+          hour: '2-digit', minute: '2-digit'
+        });
+      }
+    } catch (e) {
+      return iso;
+    }
+  }
+
+  function appendMsg(it){
+    if(it && it.RowKey && !String(it.RowKey).startsWith('temp-') && seen.has(it.RowKey)) return; // dedupe real rows
+
+    // If this is a confirmed user row, try to replace the optimistic temp bubble
+    if(it && it.sender === 'user' && it.RowKey && !String(it.RowKey).startsWith('temp-')){
+      const idx = pendingTemps.findIndex(p => (p.text || '') === (it.text || ''));
+      if(idx > -1){
+        const tempKey = pendingTemps[idx].key;
+        const node = messagesEl.querySelector(`.msg[data-rk="${tempKey}"]`);
+        if(node){
+          node.setAttribute('data-rk', it.RowKey);
+          node.removeAttribute('data-temp');
+          const meta = node.querySelector('.meta');
+          if(meta){ meta.textContent = `${it.sender} - ${fmtTime(it.created_at || it.Timestamp || '')}`; }
+          seen.delete(tempKey);
+          seen.add(it.RowKey);
+        }
+        pendingTemps.splice(idx,1);
+        return; // do not append a duplicate bubble
+      }
+    }
+    const role = it.sender === 'assistant' ? 'assistant' : 'user';
+    const wrap = document.createElement('div');
+    wrap.className = 'msg ' + role;
+    if (it.RowKey) {
+      wrap.setAttribute('data-rk', it.RowKey);
+      if (String(it.RowKey).startsWith('temp-')) { wrap.setAttribute('data-temp', '1'); }
+      seen.add(it.RowKey);
+    }
+
+    const avatar = document.createElement('div');
+    avatar.className = 'avatar';
+    avatar.textContent = (role === 'assistant') ? 'A' : 'Y';
+
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble';
+
+    const meta = document.createElement('div');
+    meta.className = 'meta';
+    meta.textContent = `${it.sender} - ${fmtTime(it.created_at || it.Timestamp || '')}`;
+
+    const textEl = document.createElement('div');
+    textEl.className = 'text';
+    // Safe text: no HTML injection; CSS preserves line breaks
+    textEl.textContent = it.text || '';
+
+    bubble.appendChild(meta);
+    bubble.appendChild(textEl);
+    wrap.appendChild(avatar);
+    wrap.appendChild(bubble);
+    messagesEl.appendChild(wrap);
+
+    // Typeset math only within this message's text node
+    renderMath(textEl);
+    try{
+      messagesEl.scrollTo({ top: messagesEl.scrollHeight, behavior: 'smooth' });
+    }catch(e){
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+  }
+
+  // Prefer Server-Sent Events for live updates
+  function startSSE(){
+    try{
+      const u = new URL('{{ url_for("chat_sse") }}', window.location.origin);
+      if(lastSeen){ u.searchParams.set('since', lastSeen); }
+      const es = new EventSource(u);
+      es.onopen = ()=>{ console.debug('sse: open'); };
+      es.onmessage = (evt)=>{
+        try{
+          const it = JSON.parse(evt.data);
+          appendMsg(it);
+          lastSeen = it.created_at || lastSeen;
+        }catch(e){ console.warn('sse parse', e); }
+      };
+      es.onerror = (e)=>{ console.debug('sse: error', e); es.close(); setTimeout(startPoll, 800); };
+      return true;
+    }catch(e){ return false; }
+  }
+
+  // Fallback: short polling
+  function startPoll(){
+    function tick(){
+      const u = new URL('{{ url_for("chat_messages") }}', window.location.origin);
+      if(lastSeen){ u.searchParams.set('since', lastSeen); }
+      fetch(u, {cache:'no-store', headers:{'Cache-Control':'no-store'}})
+        .then(r=>r.json())
+        .then(items=>{
+          if(items.length){
+            items.forEach(appendMsg);
+            lastSeen = items[items.length-1].created_at;
+          }
+        })
+        .catch(()=>{});
+    }
+    tick();
+    window.__pollTimer = setInterval(tick, 1000);
+  }
+
+  // Start SSE and also lightweight poll as backup; dedupe prevents duplicates
+  if(!startSSE()){ startPoll(); } else { startPoll(); }
+  // Render math in server-rendered messages once on load
+  renderMath(messagesEl);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+
+  form.addEventListener('submit', (e)=>{
+    e.preventDefault();
+    const text = (box.value || '').trim();
+    if(!text) return;
+    // Optimistic render
+    const tempKey = 'temp-' + Date.now();
+    pendingTemps.push({ key: tempKey, text });
+    appendMsg({RowKey: tempKey, sender:'user', text, created_at: new Date().toISOString()});
+    box.value = '';
+    const data = new URLSearchParams();
+    data.set('text', text);
+    fetch(form.action, {method:'POST', body:data}).catch(console.error);
+  });
+</script>
+{% endblock %}

@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="grid">
+    <div class="card">
+      <h3>Your Chats</h3>
+      {% if chats %}
+        <ul class="list">
+        {% for c in chats %}
+          <li>
+            <a class="chat-link" href="{{ url_for('chat_view', chat_id=c['RowKey']) }}">
+              <strong>{{ c['name'] }}</strong>
+              {% if c.get('is_temp') %}<span class="badge">temp</span>{% endif %}
+            </a>
+          </li>
+        {% endfor %}
+        </ul>
+      {% else %}
+        <p class="muted">No chats yet - create one!</p>
+      {% endif %}
+    </div>
+    <div class="card">
+      <h3>Create Chat</h3>
+      <form method="post" action="{{ url_for('create_chat_route') }}">
+        <label>Chat name</label>
+        <input name="name" placeholder="Algebra Study Group" required>
+        <label class="checkbox">
+          <input type="checkbox" name="is_temp"> Temporary chat
+        </label>
+        <label>Expires in (minutes)</label>
+        <input type="number" name="expires" value="60" min="5" step="5">
+        <button type="submit" class="btn">Create</button>
+      </form>
+    </div>
+  </div>
+{% endblock %}

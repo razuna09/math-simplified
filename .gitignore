@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+*.egg
+*.log
+
+# Virtual environments
+venv/
+.env/
+.venv/
+
+# IDE / editor
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+# Flask instance & config
+instance/
+*.sqlite
+*.db
+
+# Env files / secrets
+.env
+*.key
+*.pem

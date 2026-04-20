@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block content %}
+{% if announcement %}
+  {% set level = announcement.get('level','info') %}
+  {% set color = '#2ac3de' %}
+  {% if level == 'success' %}{% set color = '#98c379' %}{% elif level == 'warn' %}{% set color = '#e5c07b' %}{% elif level == 'error' %}{% set color = '#e06c75' %}{% endif %}
+  <div class="card" style="border-left:4px solid {{ color }}; margin-bottom:12px">
+    <h3 style="margin:0 0 6px">{{ announcement.get('title','Announcement') }}</h3>
+    <div class="muted" style="white-space:pre-wrap">{{ announcement.get('message','') }}</div>
+  </div>
+{% endif %}
+<div class="auth center card">
+  <div class="auth-header">
+    <h2>Welcome back</h2>
+    <p class="muted">Sign in to MathSimplified AI - math simplified</p>
+  </div>
+  <form method="post" class="auth-form">
+    <label>Username</label>
+    <input name="username" placeholder="yourname" autocomplete="username" required>
+    <label>Password</label>
+    <div class="password-wrap">
+      <input id="pw" type="password" name="password" placeholder="********" autocomplete="current-password" required>
+      <button class="btn btn-ghost small" id="togglePw" type="button" tabindex="-1">Show</button>
+    </div>
+    <button type="submit" class="btn">Login</button>
+  </form>
+  <p class="muted">No account? <a href="{{ url_for('register') }}">Create one</a></p>
+  {% if session.session_id %}
+  <p class="muted">Session: {{ session.session_id }}</p>
+  {% endif %}
+</div>
+
+<script>
+  document.addEventListener('DOMContentLoaded', ()=>{
+    const pw = document.getElementById('pw');
+    const t = document.getElementById('togglePw');
+    if(pw && t){
+      t.addEventListener('click', ()=>{
+        const s = pw.getAttribute('type') === 'password' ? 'text' : 'password';
+        pw.setAttribute('type', s);
+        t.textContent = (s==='password') ? 'Show' : 'Hide';
+      });
+    }
+  });
+</script>
+{% endblock %}

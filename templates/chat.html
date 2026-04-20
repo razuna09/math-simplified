@@ -1,0 +1,2227 @@
+﻿{% extends "base.html" %}
+
+{% block content %}
+
+<style>
+  /* Limit whole-page scroll on the chat view only */
+  body{ overflow:hidden; }
+  .container{
+    margin: 12px auto;
+    height: calc(100dvh - 76px);
+    padding-bottom: 14px;
+  }
+  @media (max-width: 768px){
+    body{ overflow:auto; }
+    .container{
+      margin: 10px auto;
+      height: auto;
+      padding-bottom: 20px;
+    }
+  }
+</style>
+
+<div class="chat-workspace">
+  <div class="chatgpt">
+    <header class="chat-title">
+      <div class="title-main">MathSimplified AI <span class="muted" style="font-weight:500">{{ app_version }}</span></div>
+      <div class="title-sub muted">Fast, clean, responsive chat</div>
+    </header>
+    <form id="clearForm" method="post" action="{{ url_for('chat_clear') }}" hidden></form>
+
+    <div id="messages" class="messages" aria-live="polite" aria-atomic="false">
+      {% for m in messages %}
+        {% set role = 'assistant' if m['sender']=='assistant' else 'user' %}
+        <div class="msg {{ role }}" data-rk="{{ m.get('RowKey','') }}">
+          <div class="avatar" aria-hidden="true">{{ 'A' if role=='assistant' else 'Y' }}</div>
+        <div class="bubble">
+          <div class="meta">{{ m['sender'] }} - {{ m['created_at'] }}</div>
+          {% if m.get('image_url') %}
+          <div class="msg-attachment">
+            <img
+              src="{{ m.get('image_preview_url') or m.get('image_url') }}"
+              alt="{{ m.get('image_filename') or 'Attached image' }}"
+              class="msg-attachment-img"
+              loading="lazy"
+            >
+            {% if m.get('image_filename') %}
+            <div class="msg-attachment-name muted">{{ m.get('image_filename') }}</div>
+            {% endif %}
+          </div>
+          {% endif %}
+          <div class="text">{{ m['text'] }}</div>
+          {% if role == 'user' %}
+          <div class="bubble-tools">
+            <button type="button" class="btn btn-ghost small admin-export-btn msg-copy-image-btn">Copy Image</button>
+            {% if is_admin_user %}
+            <button type="button" class="btn btn-ghost small admin-export-btn msg-download-image-btn">Download Image</button>
+            {% endif %}
+            <button type="button" class="btn btn-ghost small admin-export-btn msg-copy-text-btn">Copy Text</button>
+          </div>
+          {% endif %}
+          {% if is_admin_user and role == 'assistant' %}
+          <div class="bubble-tools">
+            <button type="button" class="btn btn-ghost small admin-export-btn admin-copy-btn">Copy Image</button>
+            <button type="button" class="btn btn-ghost small admin-export-btn admin-download-btn">Download Image</button>
+          </div>
+          {% endif %}
+        </div>
+      </div>
+    {% endfor %}
+  </div>
+
+    <form id="sendForm" class="composer" method="post" action="{{ url_for('chat_send') }}" autocomplete="off">
+      <div class="composer-main">
+        <div class="composer-tools" id="composerTools">
+          <button type="button" class="feature-launch" id="featureLauncher" aria-expanded="false" aria-controls="featureMenu" aria-label="Open chat tools">
+            <span class="feature-launch-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+                <path d="M4 4h7v7H4V4zm9 0h7v7h-7V4zM4 13h7v7H4v-7zm9 0h7v7h-7v-7z"></path>
+              </svg>
+            </span>
+          </button>
+          <div id="featureMenu" class="feature-menu" role="menu" aria-label="Chat tools">
+            <button type="button" class="feature-option" id="calcToggle" aria-expanded="false" aria-controls="calcPanel" role="menuitem">
+              <span class="feature-option-icon" aria-hidden="true">fx</span>
+              <span class="feature-option-label">Calculator</span>
+            </button>
+            {% if is_admin_user %}
+            <button type="button" class="feature-option" id="ocrAttachBtn" role="menuitem">
+              <span class="feature-option-icon" aria-hidden="true">IMG</span>
+              <span class="feature-option-label">Attach Image</span>
+            </button>
+            {% endif %}
+          </div>
+          {% if is_admin_user %}
+          <input type="file" id="ocrFileInput" accept="image/png,image/jpeg,image/webp,image/bmp,image/gif,image/tiff" hidden>
+          {% endif %}
+        </div>
+        <textarea name="text" id="msgBox" rows="2" placeholder="Write a message... Enter to send - Shift+Enter for newline"></textarea>
+        <button type="submit" class="btn" id="sendBtn" aria-label="Send message">Send</button>
+      </div>
+      {% if is_admin_user %}
+      <div id="ocrPreview" class="ocr-preview" hidden>
+        <div class="ocr-preview-head">
+          <div class="ocr-preview-title">Image ready to send</div>
+          <div class="ocr-preview-actions">
+            <button type="button" id="ocrClearBtn" class="ocr-preview-btn ocr-preview-btn-ghost">Remove</button>
+          </div>
+        </div>
+        <img id="ocrPreviewImg" class="ocr-preview-img" alt="Pending image preview">
+        <div id="ocrPreviewMeta" class="ocr-preview-meta muted"></div>
+      </div>
+      <div id="ocrStatus" class="ocr-status muted" hidden></div>
+      {% endif %}
+      <div id="msgMathPreview" class="msg-math-preview muted">Math preview appears here when you insert from calculator.</div>
+    </form>
+  </div>
+
+  <aside id="calcPanel" class="calc-panel-side" hidden aria-hidden="true">
+    <div class="calc-panel-shell">
+      <div class="calc-head">
+        <div class="calc-title">Math Builder</div>
+        <div class="calc-head-actions">
+          <button type="button" class="btn btn-ghost small calc-extend-btn" id="calcExtendBtn">Extend View</button>
+          <button type="button" class="btn btn-ghost small" id="calcCloseBtn">Close</button>
+        </div>
+      </div>
+      <div class="calc-extended-layout">
+        <div class="calc-left-pane">
+          <label for="calcInput" class="calc-label">Expression</label>
+          <input id="calcInput" type="text" class="calc-input" placeholder="Example: \sin(x)+\frac{x^2-4}{x+1}" autocomplete="off">
+          <div id="calcFormulaOcr" class="calc-formula-ocr" aria-live="polite">
+            <div class="calc-formula-tools">
+              <button type="button" class="btn btn-ghost small calc-formula-btn" id="calcFormulaUploadBtn">Formula Image</button>
+              <button type="button" class="btn btn-ghost small calc-formula-btn" id="calcFormulaExtractBtn" disabled>Extract LaTeX</button>
+              <button type="button" class="btn btn-ghost small calc-formula-btn" id="calcFormulaClearBtn" disabled>Remove</button>
+            </div>
+            <div id="calcFormulaHint" class="calc-formula-hint muted">Extended mode only: upload or paste an image that contains formula(s) to extract LaTeX.</div>
+            <div id="calcFormulaPreviewWrap" class="calc-formula-preview-wrap" hidden>
+              <img id="calcFormulaPreviewImg" class="calc-formula-preview-img" alt="Formula OCR image preview">
+              <div id="calcFormulaMeta" class="calc-formula-meta muted"></div>
+            </div>
+            <div id="calcFormulaStatus" class="calc-formula-status muted" hidden></div>
+            <input type="file" id="calcFormulaFileInput" accept="image/png,image/jpeg,image/webp,image/bmp,image/gif,image/tiff" hidden>
+          </div>
+          <div class="calc-preview-shell">
+            <div id="calcPreview" class="calc-preview muted">Preview: add an expression to see formatted math.</div>
+            <div id="calcPreviewEditorWrap" class="calc-preview-editor-wrap">
+              <math-field id="calcMathField" class="calc-math-field" aria-label="Editable math display" virtual-keyboard-mode="off"></math-field>
+              <div class="calc-preview-editor-hint muted">Editable display: update math here or in Expression field.</div>
+            </div>
+          </div>
+          <div class="calc-graph-wrap">
+            <div class="calc-graph-tools">
+              <button type="button" class="calc-graph-btn" id="graphZoomOut" aria-label="Zoom out">-</button>
+              <button type="button" class="calc-graph-btn" id="graphReset" aria-label="Reset graph">Reset</button>
+              <button type="button" class="calc-graph-btn" id="graphZoomIn" aria-label="Zoom in">+</button>
+            </div>
+            <canvas id="calcGraph" width="620" height="180" aria-label="Graph preview"></canvas>
+            <div id="calcGraphHint" class="calc-graph-hint muted">Graph preview for expressions in x (example: x^2-4).</div>
+          </div>
+        </div>
+
+        <div class="calc-right-pane">
+          <div class="calc-tabs" role="tablist" aria-label="Math categories">
+            <button type="button" class="calc-tab is-active" role="tab" aria-selected="true" data-calc-tab="algebra">Algebra</button>
+            <button type="button" class="calc-tab" role="tab" aria-selected="false" data-calc-tab="trigonometry">Trigonometry</button>
+            <button type="button" class="calc-tab" role="tab" aria-selected="false" data-calc-tab="calculus">Calculus</button>
+          </div>
+          <div class="calc-notation-search-wrap">
+            <input id="calcNotationSearch" class="calc-notation-search" type="text" placeholder="Search notation (laplace, matrix, subset, derivative...)" autocomplete="off" aria-label="Search notations">
+            <button type="button" class="calc-notation-clear-btn" id="calcNotationClearBtn" aria-label="Clear notation search" hidden>&times;</button>
+          </div>
+          <div class="calc-subtabs" role="tablist" aria-label="Advanced notation group">
+            <button type="button" class="calc-tab calc-subtab" role="tab" aria-selected="false" data-calc-tab="advanced">Advanced</button>
+          </div>
+
+          <div class="calc-keypad calc-keypad-split">
+            <div class="calc-notation-pane">
+              <div class="calc-grid calc-grid-topic is-active" data-calc-group="algebra" data-group-label="Algebra">
+          <button type="button" class="calc-key" data-insert="x" data-keywords="x variable"><span class="calc-math">\(x\)</span></button>
+          <button type="button" class="calc-key" data-insert="y" data-keywords="y variable"><span class="calc-math">\(y\)</span></button>
+          <button type="button" class="calc-key" data-insert="z" data-keywords="z variable"><span class="calc-math">\(z\)</span></button>
+          <button type="button" class="calc-key" data-insert="^2" data-keywords="square power"><span class="calc-math">\(x^2\)</span></button>
+          <button type="button" class="calc-key" data-insert="^3" data-keywords="cube power"><span class="calc-math">\(x^3\)</span></button>
+          <button type="button" class="calc-key" data-insert="^{}" data-cursor="1" data-keywords="power exponent"><span class="calc-math">\(x^n\)</span></button>
+          <button type="button" class="calc-key" data-insert="\sqrt{}" data-cursor="1" data-keywords="square root"><span class="calc-math">\(\sqrt{x}\)</span></button>
+          <button type="button" class="calc-key" data-insert="\frac{}{}" data-cursor="3" data-keywords="fraction divide"><span class="calc-math">\(\frac{a}{b}\)</span></button>
+          <button type="button" class="calc-key" data-insert="\left|\right|" data-cursor="7" data-keywords="absolute value modulus"><span class="calc-math">\(\left|x\right|\)</span></button>
+          <button type="button" class="calc-key" data-insert="\left(\right)" data-cursor="7" data-keywords="parentheses bracket">( )</button>
+          <button type="button" class="calc-key" data-insert="\left[\right]" data-cursor="7" data-keywords="square bracket">[ ]</button>
+          <button type="button" class="calc-key" data-insert="\left\{\right\}" data-cursor="7" data-keywords="curly brace set braces">{ }</button>
+          <button type="button" class="calc-key" data-insert="=" data-keywords="equals"><span class="calc-math">\(=\)</span></button>
+          <button type="button" class="calc-key" data-insert="+" data-keywords="plus">+</button>
+          <button type="button" class="calc-key" data-insert="-" data-keywords="minus subtract">&minus;</button>
+          <button type="button" class="calc-key" data-insert="\cdot " data-keywords="multiply dot"><span class="calc-math">\(\cdot\)</span></button>
+          <button type="button" class="calc-key" data-insert="\neq " data-keywords="not equal"><span class="calc-math">\(\neq\)</span></button>
+          <button type="button" class="calc-key" data-insert="\leq " data-keywords="less than equal"><span class="calc-math">\(\leq\)</span></button>
+          <button type="button" class="calc-key" data-insert="\geq " data-keywords="greater than equal"><span class="calc-math">\(\geq\)</span></button>
+          <button type="button" class="calc-key" data-insert="\approx " data-keywords="approximate"><span class="calc-math">\(\approx\)</span></button>
+          <button type="button" class="calc-key" data-insert="!" data-keywords="factorial">!</button>
+          <button type="button" class="calc-key" data-insert="\binom{n}{k} " data-keywords="n choose k binomial"><span class="calc-math">\(\binom{n}{k}\)</span></button>
+              </div>
+
+              <div class="calc-grid calc-grid-topic" data-calc-group="trigonometry" data-group-label="Trigonometry">
+          <button type="button" class="calc-key" data-insert="\sin\left(\right)" data-cursor="7" data-keywords="sine sin"><span class="calc-math">\(\sin\)</span></button>
+          <button type="button" class="calc-key" data-insert="\cos\left(\right)" data-cursor="7" data-keywords="cosine cos"><span class="calc-math">\(\cos\)</span></button>
+          <button type="button" class="calc-key" data-insert="\tan\left(\right)" data-cursor="7" data-keywords="tangent tan"><span class="calc-math">\(\tan\)</span></button>
+          <button type="button" class="calc-key" data-insert="\csc\left(\right)" data-cursor="7" data-keywords="cosecant csc"><span class="calc-math">\(\csc\)</span></button>
+          <button type="button" class="calc-key" data-insert="\sec\left(\right)" data-cursor="7" data-keywords="secant sec"><span class="calc-math">\(\sec\)</span></button>
+          <button type="button" class="calc-key" data-insert="\cot\left(\right)" data-cursor="7" data-keywords="cotangent cot"><span class="calc-math">\(\cot\)</span></button>
+          <button type="button" class="calc-key" data-insert="\arcsin\left(\right)" data-cursor="7" data-keywords="arcsin inverse sin"><span class="calc-math">\(\sin^{-1}\)</span></button>
+          <button type="button" class="calc-key" data-insert="\arccos\left(\right)" data-cursor="7" data-keywords="arccos inverse cos"><span class="calc-math">\(\cos^{-1}\)</span></button>
+          <button type="button" class="calc-key" data-insert="\arctan\left(\right)" data-cursor="7" data-keywords="arctan inverse tan"><span class="calc-math">\(\tan^{-1}\)</span></button>
+          <button type="button" class="calc-key" data-insert="\sinh\left(\right)" data-cursor="7" data-keywords="hyperbolic sinh"><span class="calc-math">\(\sinh\)</span></button>
+          <button type="button" class="calc-key" data-insert="\cosh\left(\right)" data-cursor="7" data-keywords="hyperbolic cosh"><span class="calc-math">\(\cosh\)</span></button>
+          <button type="button" class="calc-key" data-insert="\tanh\left(\right)" data-cursor="7" data-keywords="hyperbolic tanh"><span class="calc-math">\(\tanh\)</span></button>
+          <button type="button" class="calc-key" data-insert="\pi " data-keywords="pi"><span class="calc-math">\(\pi\)</span></button>
+          <button type="button" class="calc-key" data-insert="\theta " data-keywords="theta"><span class="calc-math">\(\theta\)</span></button>
+          <button type="button" class="calc-key" data-insert="^\circ " data-keywords="degree"><span class="calc-math">\(^{\circ}\)</span></button>
+          <button type="button" class="calc-key" data-insert="\angle " data-keywords="angle"><span class="calc-math">\(\angle\)</span></button>
+          <button type="button" class="calc-key" data-insert="^{}" data-cursor="1" data-keywords="power"><span class="calc-math">\(x^n\)</span></button>
+          <button type="button" class="calc-key" data-insert="\pm " data-keywords="plus minus"><span class="calc-math">\(\pm\)</span></button>
+              </div>
+
+              <div class="calc-grid calc-grid-topic" data-calc-group="calculus" data-group-label="Calculus">
+          <button type="button" class="calc-key" data-insert="\lim_{x \to }" data-cursor="1" data-keywords="limit lim"><span class="calc-math">\(\lim\)</span></button>
+          <button type="button" class="calc-key" data-insert="\int_{}^{} " data-cursor="4" data-keywords="integral"><span class="calc-math">\(\int\)</span></button>
+          <button type="button" class="calc-key" data-insert="\iint_{}^{} " data-cursor="4" data-keywords="double integral"><span class="calc-math">\(\iint\)</span></button>
+          <button type="button" class="calc-key" data-insert="\oint " data-keywords="contour integral"><span class="calc-math">\(\oint\)</span></button>
+          <button type="button" class="calc-key" data-insert="\frac{d}{dx} " data-keywords="derivative d dx"><span class="calc-math">\(\frac{d}{dx}\)</span></button>
+          <button type="button" class="calc-key" data-insert="\frac{\partial}{\partial x} " data-keywords="partial derivative"><span class="calc-math">\(\frac{\partial}{\partial x}\)</span></button>
+          <button type="button" class="calc-key" data-insert="\nabla " data-keywords="nabla gradient"><span class="calc-math">\(\nabla\)</span></button>
+          <button type="button" class="calc-key" data-insert="\Delta " data-keywords="delta change"><span class="calc-math">\(\Delta\)</span></button>
+          <button type="button" class="calc-key" data-insert="\sum_{n=1}^{} " data-cursor="2" data-keywords="summation sigma"><span class="calc-math">\(\sum\)</span></button>
+          <button type="button" class="calc-key" data-insert="\prod_{n=1}^{} " data-cursor="2" data-keywords="product pi"><span class="calc-math">\(\prod\)</span></button>
+          <button type="button" class="calc-key" data-insert="\infty " data-keywords="infinity"><span class="calc-math">\(\infty\)</span></button>
+          <button type="button" class="calc-key" data-insert="f'(x)" data-keywords="prime derivative"><span class="calc-math">\(f'(x)\)</span></button>
+          <button type="button" class="calc-key" data-insert="dx" data-keywords="dx differential"><span class="calc-math">\(dx\)</span></button>
+          <button type="button" class="calc-key" data-insert="dy" data-keywords="dy differential"><span class="calc-math">\(dy\)</span></button>
+          <button type="button" class="calc-key" data-insert="dt" data-keywords="dt differential"><span class="calc-math">\(dt\)</span></button>
+          <button type="button" class="calc-key" data-insert="\ln\left(\right)" data-cursor="7" data-keywords="natural log ln"><span class="calc-math">\(\ln\)</span></button>
+          <button type="button" class="calc-key" data-insert="\log\left(\right)" data-cursor="7" data-keywords="logarithm log"><span class="calc-math">\(\log\)</span></button>
+          <button type="button" class="calc-key" data-insert="e^{}" data-cursor="1" data-keywords="exponential e"><span class="calc-math">\(e^x\)</span></button>
+              </div>
+
+              <div class="calc-grid calc-grid-topic" data-calc-group="advanced" data-group-label="Advanced">
+          <button type="button" class="calc-key" data-insert="\left\{\right\}" data-cursor="7" data-keywords="set braces curly brackets"><span class="calc-math">\(\{ \}\)</span></button>
+          <button type="button" class="calc-key" data-insert="\left\{x \mid x>0\right\}" data-cursor="8" data-keywords="set builder notation"><span class="calc-math">\(\{x \mid x>0\}\)</span></button>
+          <button type="button" class="calc-key" data-insert="\emptyset " data-keywords="empty set"><span class="calc-math">\(\emptyset\)</span></button>
+          <button type="button" class="calc-key" data-insert="\mathcal{L}\left\{f(t)\right\}" data-keywords="laplace transform"><span class="calc-math">\(\mathcal{L}\{f(t)\}\)</span></button>
+          <button type="button" class="calc-key" data-insert="\mathcal{L}^{-1}\left\{F(s)\right\}" data-keywords="inverse laplace"><span class="calc-math">\(\mathcal{L}^{-1}\{F(s)\}\)</span></button>
+          <button type="button" class="calc-key" data-insert="\int_0^{\infty} e^{-st} f(t)\,dt" data-keywords="laplace definition"><span class="calc-math">\(\int_0^{\infty}e^{-st}f(t)\,dt\)</span></button>
+          <button type="button" class="calc-key" data-insert="F(s)" data-keywords="f of s"><span class="calc-math">\(F(s)\)</span></button>
+          <button type="button" class="calc-key" data-insert="f(t)" data-keywords="f of t"><span class="calc-math">\(f(t)\)</span></button>
+          <button type="button" class="calc-key" data-insert="\mathcal{F}\left\{f(t)\right\}" data-keywords="fourier transform"><span class="calc-math">\(\mathcal{F}\{f(t)\}\)</span></button>
+          <button type="button" class="calc-key" data-insert="\mathcal{Z}\left\{x[n]\right\}" data-keywords="z transform"><span class="calc-math">\(\mathcal{Z}\{x[n]\}\)</span></button>
+          <button type="button" class="calc-key" data-insert="\begin{bmatrix}a &amp; b \\ c &amp; d\end{bmatrix}" data-keywords="matrix"><span class="calc-math">\(\begin{bmatrix}a & b\\c & d\end{bmatrix}\)</span></button>
+          <button type="button" class="calc-key" data-insert="\det\left(A\right)" data-keywords="determinant"><span class="calc-math">\(\det(A)\)</span></button>
+          <button type="button" class="calc-key" data-insert="\vec{v}" data-keywords="vector"><span class="calc-math">\(\vec{v}\)</span></button>
+          <button type="button" class="calc-key" data-insert="\left\langle u,v\right\rangle" data-keywords="inner product"><span class="calc-math">\(\langle u,v\rangle\)</span></button>
+          <button type="button" class="calc-key" data-insert="\in " data-keywords="element in"><span class="calc-math">\(\in\)</span></button>
+          <button type="button" class="calc-key" data-insert="\notin " data-keywords="not in"><span class="calc-math">\(\notin\)</span></button>
+          <button type="button" class="calc-key" data-insert="\subset " data-keywords="subset"><span class="calc-math">\(\subset\)</span></button>
+          <button type="button" class="calc-key" data-insert="\subseteq " data-keywords="subset equal"><span class="calc-math">\(\subseteq\)</span></button>
+          <button type="button" class="calc-key" data-insert="\cup " data-keywords="union"><span class="calc-math">\(\cup\)</span></button>
+          <button type="button" class="calc-key" data-insert="\cap " data-keywords="intersection"><span class="calc-math">\(\cap\)</span></button>
+          <button type="button" class="calc-key" data-insert="\forall " data-keywords="for all"><span class="calc-math">\(\forall\)</span></button>
+          <button type="button" class="calc-key" data-insert="\exists " data-keywords="exists"><span class="calc-math">\(\exists\)</span></button>
+          <button type="button" class="calc-key" data-insert="\Rightarrow " data-keywords="implies"><span class="calc-math">\(\Rightarrow\)</span></button>
+          <button type="button" class="calc-key" data-insert="\Leftrightarrow " data-keywords="if and only if"><span class="calc-math">\(\Leftrightarrow\)</span></button>
+          <button type="button" class="calc-key" data-insert="\therefore " data-keywords="therefore"><span class="calc-math">\(\therefore\)</span></button>
+              </div>
+              <div id="calcNotationNoResults" class="calc-notation-empty muted" hidden>No matching notations found.</div>
+            </div>
+
+            <div class="calc-numbers-pane">
+              <div class="calc-grid calc-grid-common">
+          <button type="button" class="calc-key" data-insert="7">7</button>
+          <button type="button" class="calc-key" data-insert="8">8</button>
+          <button type="button" class="calc-key" data-insert="9">9</button>
+          <button type="button" class="calc-key calc-action calc-backspace-key" data-calc-action="backspace" aria-label="Backspace" title="Backspace">&#9003;</button>
+          <button type="button" class="calc-key" data-insert="4">4</button>
+          <button type="button" class="calc-key" data-insert="5">5</button>
+          <button type="button" class="calc-key" data-insert="6">6</button>
+          <button type="button" class="calc-key" data-insert="\div ">&divide;</button>
+          <button type="button" class="calc-key" data-insert="1">1</button>
+          <button type="button" class="calc-key" data-insert="2">2</button>
+          <button type="button" class="calc-key" data-insert="3">3</button>
+          <button type="button" class="calc-key" data-insert="\times ">&times;</button>
+          <button type="button" class="calc-key" data-insert="0">0</button>
+          <button type="button" class="calc-key" data-insert=".">.</button>
+          <button type="button" class="calc-key" data-insert="-">&minus;</button>
+          <button type="button" class="calc-key" data-insert="+">+</button>
+          <button type="button" class="calc-key" data-insert="(">(</button>
+          <button type="button" class="calc-key" data-insert=")">)</button>
+          <button type="button" class="calc-key" data-insert="=">=</button>
+          <button type="button" class="calc-key calc-action" data-calc-action="clear">AC</button>
+              </div>
+            </div>
+          </div>
+          <div class="calc-footer">
+            <button type="button" class="btn btn-ghost calc-basic-toggle-btn" id="calcBasicToggleBtn">Basic</button>
+            <button type="button" class="btn btn-ghost calc-close-footer-btn" id="calcCloseFooterBtn">Close</button>
+            <button type="button" class="btn calc-insert-btn" id="calcToChatBtn">Send to Chat</button>
+          </div>
+          <div class="calc-templates">
+            <button type="button" class="calc-template" data-template="6x+5=14">Linear equations</button>
+            <button type="button" class="calc-template" data-template="(x+5)(x+2)">Polynomials</button>
+            <button type="button" class="calc-template" data-template="4x^2-5x-12=0">Quadratic equations</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </aside>
+</div>
+<div id="calcBackdrop" class="calc-backdrop" hidden></div>
+
+<script defer src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/html-to-image@1.11.13/dist/html-to-image.min.js"></script>
+<script type="module" src="https://unpkg.com/mathlive?module"></script>
+<script>
+  // Render KaTeX math within a given element (bubble or container)
+  function renderMath(el){
+    if (!window.renderMathInElement || !el) return;
+    try {
+        renderMathInElement(el, {
+            delimiters: [
+                {left: "$$", right: "$$", display: true},
+                {left: "\\[", right: "\\]", display: true},
+                {left: "$",  right: "$",  display: false},
+                {left: "\\(", right: "\\)", display: false},
+            ],
+            output: 'html',
+            throwOnError: false
+        });
+    } catch (_) { /* noop */ }
+  }
+
+  function escapeHtml(raw){
+    return String(raw || '').replace(/[&<>"']/g, (ch)=>{
+      switch(ch){
+        case '&': return '&amp;';
+        case '<': return '&lt;';
+        case '>': return '&gt;';
+        case '"': return '&quot;';
+        case "'": return '&#39;';
+        default: return ch;
+      }
+    });
+  }
+
+  function formatMessageMarkup(raw){
+    const normalized = String(raw || '').replace(/\r\n?/g, '\n');
+    const escaped = escapeHtml(normalized);
+    const withHeadings = escaped.replace(/^###\s+(.+)$/gm, '<span class="md-h3">$1</span>');
+    const withBold = withHeadings.replace(/\*\*(\S(?:[^\n]*?\S)?)\*\*/g, '<strong>$1</strong>');
+    return withBold;
+  }
+
+  function setFormattedMessageContent(el, raw){
+    if(!el) return;
+    const source = String(raw || '');
+    el.dataset.rawText = source;
+    el.innerHTML = formatMessageMarkup(source);
+  }
+
+  // html2canvas on some macOS browsers skips aria-hidden nodes.
+  // KaTeX stores visual glyphs in .katex-html (aria-hidden="true"), so we
+  // unhide that layer for export and hide MathML accessibility fallback.
+  function normalizeKatexForImage(root){
+    if(!root) return;
+    root.querySelectorAll('.katex-html[aria-hidden]').forEach((node)=>{
+      node.removeAttribute('aria-hidden');
+      node.style.visibility = 'visible';
+      node.style.opacity = '1';
+    });
+    root.querySelectorAll('.katex-mathml').forEach((node)=>{
+      node.setAttribute('aria-hidden', 'true');
+      node.style.display = 'none';
+    });
+    root.querySelectorAll('.katex-display').forEach((node)=>{
+      node.style.margin = '0.25em 0';
+      node.style.padding = '0';
+      node.style.overflowX = 'auto';
+      node.style.overflowY = 'hidden';
+    });
+  }
+
+  // Apply KaTeX rendering after deferred KaTeX scripts are ready
+  window.addEventListener('DOMContentLoaded', () => {
+    const messagesEl = document.getElementById('messages');
+    if (messagesEl) {
+      messagesEl.querySelectorAll('.msg .text').forEach((el)=>{
+        const raw = el.dataset.rawText || el.textContent || '';
+        setFormattedMessageContent(el, raw);
+      });
+      renderMath(messagesEl);
+    }
+    const calcPanelEl = document.getElementById('calcPanel');
+    if (calcPanelEl) { renderMath(calcPanelEl); }
+  });
+
+  // Confirm before clearing all messages
+  const clearForm = document.getElementById('clearForm');
+  if(clearForm){
+    clearForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const ok = confirm('Delete all messages in this chat?');
+        if(!ok) return;
+
+        try {
+            const response = await fetch(clearForm.action, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            });
+
+            if(response.ok) {
+                const messagesEl = document.getElementById('messages');
+                messagesEl.innerHTML = '';
+                alert('All messages and AI responses cleared.');
+            } else {
+                alert('Failed to clear messages.');
+            }
+        } catch (error) {
+            console.error('Error clearing messages:', error);
+            alert('An error occurred while clearing messages.');
+        }
+    });
+  }
+
+  // Initialize cursor to the last server-rendered message to avoid duplicates on first poll
+  let lastSeen = "{{ messages[-1]['created_at'] if messages else '' }}";
+
+  const messagesEl = document.getElementById('messages');
+  const form = document.getElementById('sendForm');
+  const box = document.getElementById('msgBox');
+  const sendBtn = document.getElementById('sendBtn');
+  const isAdminUser = {{ 'true' if is_admin_user else 'false' }};
+  const msgMathPreview = document.getElementById('msgMathPreview');
+  const ocrStatus = document.getElementById('ocrStatus');
+  const ocrPreview = document.getElementById('ocrPreview');
+  const ocrPreviewImg = document.getElementById('ocrPreviewImg');
+  const ocrPreviewMeta = document.getElementById('ocrPreviewMeta');
+  const ocrClearBtn = document.getElementById('ocrClearBtn');
+  const composerTools = document.getElementById('composerTools');
+  const featureLauncher = document.getElementById('featureLauncher');
+  const featureMenu = document.getElementById('featureMenu');
+  const ocrAttachBtn = document.getElementById('ocrAttachBtn');
+  const ocrFileInput = document.getElementById('ocrFileInput');
+  const calcPanel = document.getElementById('calcPanel');
+  const calcBackdrop = document.getElementById('calcBackdrop');
+  const calcToggle = document.getElementById('calcToggle');
+  const calcCloseBtn = document.getElementById('calcCloseBtn');
+  const calcExtendBtn = document.getElementById('calcExtendBtn');
+  const calcInput = document.getElementById('calcInput');
+  const calcFormulaOcr = document.getElementById('calcFormulaOcr');
+  const calcFormulaUploadBtn = document.getElementById('calcFormulaUploadBtn');
+  const calcFormulaExtractBtn = document.getElementById('calcFormulaExtractBtn');
+  const calcFormulaClearBtn = document.getElementById('calcFormulaClearBtn');
+  const calcFormulaHint = document.getElementById('calcFormulaHint');
+  const calcFormulaPreviewWrap = document.getElementById('calcFormulaPreviewWrap');
+  const calcFormulaPreviewImg = document.getElementById('calcFormulaPreviewImg');
+  const calcFormulaMeta = document.getElementById('calcFormulaMeta');
+  const calcFormulaStatus = document.getElementById('calcFormulaStatus');
+  const calcFormulaFileInput = document.getElementById('calcFormulaFileInput');
+  const calcPreview = document.getElementById('calcPreview');
+  const calcPreviewEditorWrap = document.getElementById('calcPreviewEditorWrap');
+  const calcMathField = document.getElementById('calcMathField');
+  const calcGraph = document.getElementById('calcGraph');
+  const calcGraphWrap = calcPanel ? calcPanel.querySelector('.calc-graph-wrap') : null;
+  const calcGraphHint = document.getElementById('calcGraphHint');
+  const calcCloseFooterBtn = document.getElementById('calcCloseFooterBtn');
+  const graphZoomInBtn = document.getElementById('graphZoomIn');
+  const graphZoomOutBtn = document.getElementById('graphZoomOut');
+  const graphResetBtn = document.getElementById('graphReset');
+  const calcToChatBtn = document.getElementById('calcToChatBtn');
+  const calcBasicToggleBtn = document.getElementById('calcBasicToggleBtn');
+  const calcNotationSearch = document.getElementById('calcNotationSearch');
+  const calcNotationClearBtn = document.getElementById('calcNotationClearBtn');
+  const calcNotationNoResults = document.getElementById('calcNotationNoResults');
+  const calcTabs = Array.from(document.querySelectorAll('.calc-tab'));
+  const calcTopicGroups = Array.from(document.querySelectorAll('.calc-grid-topic'));
+  const seen = new Set(Array.from(messagesEl.querySelectorAll('.msg[data-rk]')).map(n=>n.getAttribute('data-rk')).filter(Boolean));
+  const pendingTemps = [];
+  const composer = document.querySelector('.composer');
+  let sse = null;
+  let sseRetryMs = 1000;
+  let sseRetryTimer = null;
+  let calcCloseTimer = null;
+  let featureMenuCloseTimer = null;
+  let compactNotationCollapsed = false;
+  let phoneBasicPadActive = false;
+  let pendingOcrFile = null;
+  let pendingOcrObjectUrl = '';
+  let calcFormulaBusy = false;
+  let pendingCalcFormulaFile = null;
+  let pendingCalcFormulaObjectUrl = '';
+  let calcFormulaStatusTimer = null;
+  const graphState = {
+    baseScaleX: 24,
+    baseScaleY: 24,
+    zoom: 1,
+    offsetX: 0,
+    offsetY: 0,
+    isDragging: false,
+    dragX: 0,
+    dragY: 0
+  };
+  let calcEditorSyncLock = false;
+
+  function setMessagesBottomPad(force){
+    const at = atBottom();
+    const h = composer ? composer.offsetHeight : 0;
+    messagesEl.style.setProperty('--messages-pad-bottom', (h + 24) + 'px');
+    if (force || at) {
+      try{ messagesEl.scrollTo({ top: messagesEl.scrollHeight, behavior: 'smooth' }); }catch(_){ messagesEl.scrollTop = messagesEl.scrollHeight; }
+    }
+  }
+
+  function atBottom(){
+    return (messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight) < 120;
+  }
+
+  function fmtTime(iso) {
+    if (!iso) return '';
+    try {
+      const now = new Date();
+      const d = new Date(iso);
+      const diffMs = now - d;
+      const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+
+      if (diffDays === 0) {
+        return `Today at ${d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}`;
+      } else if (diffDays === 1) {
+        return `Yesterday at ${d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}`;
+      } else {
+        return d.toLocaleDateString(undefined, {
+          year: 'numeric', month: 'short', day: 'numeric',
+          hour: '2-digit', minute: '2-digit'
+        });
+      }
+    } catch (e) {
+      return iso;
+    }
+  }
+
+  function upsertMessageAttachment(bubble, it){
+    if(!bubble) return;
+    const textEl = bubble.querySelector('.text');
+    if(!textEl) return;
+    const imageUrl = String((it && (it.image_preview_url || it.image_url)) || '').trim();
+    const imageFilename = String((it && it.image_filename) || '').trim();
+    let wrap = bubble.querySelector('.msg-attachment');
+    if(!imageUrl){
+      if(wrap){ wrap.remove(); }
+      return;
+    }
+    if(!wrap){
+      wrap = document.createElement('div');
+      wrap.className = 'msg-attachment';
+      bubble.insertBefore(wrap, textEl);
+    }
+    wrap.textContent = '';
+    const img = document.createElement('img');
+    img.className = 'msg-attachment-img';
+    img.src = imageUrl;
+    img.alt = imageFilename || 'Attached image';
+    img.loading = 'lazy';
+    wrap.appendChild(img);
+    if(imageFilename){
+      const cap = document.createElement('div');
+      cap.className = 'msg-attachment-name muted';
+      cap.textContent = imageFilename;
+      wrap.appendChild(cap);
+    }
+  }
+
+  function appendMsg(it){
+    if(it && it.RowKey && !String(it.RowKey).startsWith('temp-') && seen.has(it.RowKey)) return; // dedupe real rows
+
+    // If this is a confirmed user row, try to replace the optimistic temp bubble
+    if(it && it.sender === 'user' && it.RowKey && !String(it.RowKey).startsWith('temp-')){
+      const incomingHasImage = Boolean(String((it && it.image_url) || '').trim());
+      let idx = pendingTemps.findIndex(p => (p.text || '') === (it.text || '') && Boolean(p.hasImage) === incomingHasImage);
+      if(idx < 0){
+        idx = pendingTemps.findIndex(p => (p.text || '') === (it.text || ''));
+      }
+      if(idx > -1){
+        const tempItem = pendingTemps[idx];
+        const tempKey = pendingTemps[idx].key;
+        const node = messagesEl.querySelector(`.msg[data-rk="${tempKey}"]`);
+        if(node){
+          node.setAttribute('data-rk', it.RowKey);
+          node.removeAttribute('data-temp');
+          const meta = node.querySelector('.meta');
+          if(meta){ meta.textContent = `${it.sender} - ${fmtTime(it.created_at || it.Timestamp || '')}`; }
+          const textEl = node.querySelector('.text');
+          if(textEl){
+            setFormattedMessageContent(textEl, it.text || '');
+            renderMath(textEl);
+          }
+          const bubble = node.querySelector('.bubble');
+          if(bubble){
+            upsertMessageAttachment(bubble, it);
+          }
+          seen.delete(tempKey);
+          seen.add(it.RowKey);
+        }
+        if(tempItem && tempItem.tempImageUrl){
+          const nextImageUrl = String((it && it.image_url) || '').trim();
+          if(!nextImageUrl || nextImageUrl !== tempItem.tempImageUrl){
+            try{ URL.revokeObjectURL(tempItem.tempImageUrl); }catch(_){ /* noop */ }
+          }
+        }
+        pendingTemps.splice(idx,1);
+        return; // do not append a duplicate bubble
+      }
+    }
+    const role = it.sender === 'assistant' ? 'assistant' : 'user';
+    const wrap = document.createElement('div');
+    wrap.className = 'msg ' + role + ' incoming';
+    if (it.RowKey) {
+      wrap.setAttribute('data-rk', it.RowKey);
+      if (String(it.RowKey).startsWith('temp-')) { wrap.setAttribute('data-temp', '1'); }
+      seen.add(it.RowKey);
+    }
+
+    const avatar = document.createElement('div');
+    avatar.className = 'avatar';
+    avatar.textContent = (role === 'assistant') ? 'A' : 'Y';
+
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble';
+
+    const meta = document.createElement('div');
+    meta.className = 'meta';
+    meta.textContent = `${it.sender} - ${fmtTime(it.created_at || it.Timestamp || '')}`;
+
+    const textEl = document.createElement('div');
+    textEl.className = 'text';
+    setFormattedMessageContent(textEl, it.text || '');
+
+    bubble.appendChild(meta);
+    bubble.appendChild(textEl);
+    upsertMessageAttachment(bubble, it);
+    if (role === 'user') {
+      const tools = document.createElement('div');
+      tools.className = 'bubble-tools';
+      const copyImageBtn = document.createElement('button');
+      copyImageBtn.type = 'button';
+      copyImageBtn.className = 'btn btn-ghost small admin-export-btn msg-copy-image-btn';
+      copyImageBtn.textContent = 'Copy Image';
+      const copyTextBtn = document.createElement('button');
+      copyTextBtn.type = 'button';
+      copyTextBtn.className = 'btn btn-ghost small admin-export-btn msg-copy-text-btn';
+      copyTextBtn.textContent = 'Copy Text';
+      tools.appendChild(copyImageBtn);
+      if (isAdminUser) {
+        const downloadImageBtn = document.createElement('button');
+        downloadImageBtn.type = 'button';
+        downloadImageBtn.className = 'btn btn-ghost small admin-export-btn msg-download-image-btn';
+        downloadImageBtn.textContent = 'Download Image';
+        tools.appendChild(downloadImageBtn);
+      }
+      tools.appendChild(copyTextBtn);
+      bubble.appendChild(tools);
+    } else if (isAdminUser && role === 'assistant') {
+      const tools = document.createElement('div');
+      tools.className = 'bubble-tools';
+      const copyBtn = document.createElement('button');
+      copyBtn.type = 'button';
+      copyBtn.className = 'btn btn-ghost small admin-export-btn admin-copy-btn';
+      copyBtn.textContent = 'Copy Image';
+      const downloadBtn = document.createElement('button');
+      downloadBtn.type = 'button';
+      downloadBtn.className = 'btn btn-ghost small admin-export-btn admin-download-btn';
+      downloadBtn.textContent = 'Download Image';
+      tools.appendChild(copyBtn);
+      tools.appendChild(downloadBtn);
+      bubble.appendChild(tools);
+    }
+    wrap.appendChild(avatar);
+    wrap.appendChild(bubble);
+    messagesEl.appendChild(wrap);
+
+    // Trigger entrance animation
+    requestAnimationFrame(()=>{
+      wrap.classList.add('enter');
+      setTimeout(()=>wrap.classList.remove('incoming','enter'), 450);
+    });
+
+    // Typeset math only within this message's text node
+    renderMath(textEl);
+    try{
+      messagesEl.scrollTo({ top: messagesEl.scrollHeight, behavior: 'smooth' });
+    }catch(e){
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+    setMessagesBottomPad();
+    if (role === 'user') {
+      wireUserMessageTools(wrap);
+    } else if (isAdminUser && role === 'assistant') {
+      wireAdminExportForMessage(wrap);
+    }
+  }
+
+  function formatExportText(raw){
+    return String(raw || '')
+      .replace(/\r\n?/g, '\n')
+      .replace(/\n[ \t]*\n+/g, '\n')
+      .trim();
+  }
+
+  function buildExportCardFromMessage(msgWrap){
+    const textEl = msgWrap ? msgWrap.querySelector('.bubble .text') : null;
+    if(!textEl) return null;
+    const rawText = textEl.dataset.rawText || textEl.textContent || '';
+    const stage = document.createElement('div');
+    stage.className = 'export-stage';
+    const card = document.createElement('div');
+    card.className = 'export-card';
+    const head = document.createElement('div');
+    head.className = 'export-card-head';
+    const brand = document.createElement('div');
+    brand.className = 'export-brand';
+    const logo = document.createElement('div');
+    logo.className = 'export-logo';
+    logo.setAttribute('aria-hidden', 'true');
+    logo.textContent = 'M';
+    const title = document.createElement('div');
+    title.className = 'export-brand-text';
+    title.textContent = 'MathSimplified AI';
+    brand.appendChild(logo);
+    brand.appendChild(title);
+    head.appendChild(brand);
+    const body = document.createElement('div');
+    body.className = 'export-card-body';
+    body.style.fontSize = '1.02rem';
+    body.style.lineHeight = '1.2';
+    body.style.whiteSpace = 'pre-line';
+    setFormattedMessageContent(body, formatExportText(rawText));
+    const foot = document.createElement('div');
+    foot.className = 'export-card-foot';
+    foot.textContent = msgWrap && msgWrap.classList.contains('user') ? 'Prepared by User' : 'Prepared by Admin';
+    card.appendChild(head);
+    card.appendChild(body);
+    card.appendChild(foot);
+    stage.appendChild(card);
+    document.body.appendChild(stage);
+    renderMath(body);
+    normalizeKatexForImage(card);
+    return { stage, card };
+  }
+
+  async function copyBlobToClipboard(blob){
+    if(navigator.clipboard && window.ClipboardItem){
+      try{
+        const item = new ClipboardItem({ 'image/png': blob });
+        await navigator.clipboard.write([item]);
+        return;
+      }catch(_){}
+      const fallbackItem = new ClipboardItem({ 'image/png': Promise.resolve(blob) });
+      await navigator.clipboard.write([fallbackItem]);
+      return;
+    }
+    await legacyCopyImage(blob);
+  }
+
+  function blobToDataUrl(blob){
+    return new Promise((resolve, reject)=>{
+      const reader = new FileReader();
+      reader.onload = ()=>resolve(reader.result);
+      reader.onerror = ()=>reject(new Error('Failed to convert image for clipboard'));
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  async function legacyCopyImage(blob){
+    if(typeof document.execCommand !== 'function'){
+      throw new Error('Legacy clipboard API unavailable');
+    }
+    const dataUrl = await blobToDataUrl(blob);
+    const box = document.createElement('div');
+    box.contentEditable = 'true';
+    box.style.position = 'fixed';
+    box.style.left = '0';
+    box.style.top = '0';
+    box.style.opacity = '0';
+    box.style.pointerEvents = 'none';
+    box.style.whiteSpace = 'nowrap';
+    const img = document.createElement('img');
+    img.src = dataUrl;
+    img.alt = 'math solution';
+    box.appendChild(img);
+    document.body.appendChild(box);
+    await new Promise((resolve, reject)=>{
+      img.onload = ()=>resolve();
+      img.onerror = ()=>reject(new Error('Failed to prepare image for clipboard'));
+    });
+    const selection = window.getSelection();
+    if(!selection){
+      box.remove();
+      throw new Error('Selection API unavailable');
+    }
+    const range = document.createRange();
+    range.selectNodeContents(box);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    const ok = document.execCommand('copy');
+    selection.removeAllRanges();
+    box.remove();
+    if(!ok){
+      throw new Error('Legacy clipboard copy failed');
+    }
+  }
+
+  function downloadBlob(blob){
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'math-solution-card.png';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  async function captureCardAsBlob(card){
+    if(window.htmlToImage && typeof window.htmlToImage.toBlob === 'function'){
+      try{
+        const blob = await window.htmlToImage.toBlob(card, {
+          pixelRatio: 2,
+          cacheBust: true,
+          backgroundColor: '#ffffff',
+          style: {
+            lineHeight: '1.2'
+          }
+        });
+        if(blob){ return blob; }
+      }catch(e){
+        console.warn('html-to-image capture failed, falling back to html2canvas', e);
+      }
+    }
+    if(window.html2canvas){
+      const canvas = await window.html2canvas(card, {
+        backgroundColor: '#ffffff',
+        scale: 2,
+        useCORS: true,
+        onclone: (doc)=>{
+          const clonedCard = doc.querySelector('.export-card');
+          normalizeKatexForImage(clonedCard);
+        }
+      });
+      const blob = await new Promise(resolve=>canvas.toBlob(resolve, 'image/png'));
+      if(blob){ return blob; }
+      throw new Error('Export failed');
+    }
+    throw new Error('Image export library unavailable');
+  }
+
+  async function buildMessageImageBlob(msgWrap){
+    if(!window.html2canvas && !(window.htmlToImage && typeof window.htmlToImage.toBlob === 'function')){
+      throw new Error('Image export library is still loading');
+    }
+    const built = buildExportCardFromMessage(msgWrap);
+    if(!built) throw new Error('No message to export');
+    const { stage, card } = built;
+    try{
+      if(document.fonts && document.fonts.ready){ await document.fonts.ready; }
+      return await captureCardAsBlob(card);
+    }finally{
+      stage.remove();
+    }
+  }
+
+  async function copyMessageAsImage(msgWrap){
+    try{
+      const blob = await buildMessageImageBlob(msgWrap);
+      await copyBlobToClipboard(blob);
+      alert('Image copied to clipboard.');
+    }catch(e){
+      console.error('copy image failed', e);
+      alert('Could not copy image directly in this browser. Use Download Image.');
+    }
+  }
+
+  async function downloadMessageAsImage(msgWrap){
+    try{
+      const blob = await buildMessageImageBlob(msgWrap);
+      downloadBlob(blob);
+      alert('Image downloaded.');
+    }catch(e){
+      console.error('download image failed', e);
+      alert('Failed to download image.');
+    }
+  }
+
+  async function copyTextToClipboard(raw){
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      await navigator.clipboard.writeText(raw);
+      return;
+    }
+    const ta = document.createElement('textarea');
+    ta.value = raw;
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    const ok = document.execCommand('copy');
+    ta.remove();
+    if(!ok){ throw new Error('Clipboard text copy failed'); }
+  }
+
+  async function copyMessageText(msgWrap){
+    try{
+      const textEl = msgWrap ? msgWrap.querySelector('.bubble .text') : null;
+      const rawText = textEl ? (textEl.dataset.rawText || textEl.textContent || '').trimEnd() : '';
+      if(!rawText){
+        throw new Error('No text to copy');
+      }
+      await copyTextToClipboard(rawText);
+      alert('Question text copied.');
+    }catch(e){
+      console.error('copy text failed', e);
+      alert('Failed to copy text.');
+    }
+  }
+
+  function wireUserMessageTools(msgWrap){
+    if(!msgWrap || !msgWrap.classList.contains('user')) return;
+    const bubble = msgWrap.querySelector('.bubble');
+    if(!bubble) return;
+    let tools = msgWrap.querySelector('.bubble-tools');
+    if(!tools){
+      tools = document.createElement('div');
+      tools.className = 'bubble-tools';
+      bubble.appendChild(tools);
+    }
+    let copyImageBtn = msgWrap.querySelector('.msg-copy-image-btn');
+    if(!copyImageBtn){
+      copyImageBtn = document.createElement('button');
+      copyImageBtn.type = 'button';
+      copyImageBtn.className = 'btn btn-ghost small admin-export-btn msg-copy-image-btn';
+      copyImageBtn.textContent = 'Copy Image';
+      tools.appendChild(copyImageBtn);
+    }
+    let downloadImageBtn = msgWrap.querySelector('.msg-download-image-btn');
+    if(isAdminUser && !downloadImageBtn){
+      downloadImageBtn = document.createElement('button');
+      downloadImageBtn.type = 'button';
+      downloadImageBtn.className = 'btn btn-ghost small admin-export-btn msg-download-image-btn';
+      downloadImageBtn.textContent = 'Download Image';
+      tools.appendChild(downloadImageBtn);
+    } else if(!isAdminUser && downloadImageBtn){
+      downloadImageBtn.remove();
+      downloadImageBtn = null;
+    }
+    let copyTextBtn = msgWrap.querySelector('.msg-copy-text-btn');
+    if(!copyTextBtn){
+      copyTextBtn = document.createElement('button');
+      copyTextBtn.type = 'button';
+      copyTextBtn.className = 'btn btn-ghost small admin-export-btn msg-copy-text-btn';
+      copyTextBtn.textContent = 'Copy Text';
+      tools.appendChild(copyTextBtn);
+    }
+    if(copyImageBtn.dataset.bound !== '1'){
+      copyImageBtn.dataset.bound = '1';
+      copyImageBtn.addEventListener('click', ()=>copyMessageAsImage(msgWrap));
+    }
+    if(downloadImageBtn && downloadImageBtn.dataset.bound !== '1'){
+      downloadImageBtn.dataset.bound = '1';
+      downloadImageBtn.addEventListener('click', ()=>downloadMessageAsImage(msgWrap));
+    }
+    if(copyTextBtn.dataset.bound !== '1'){
+      copyTextBtn.dataset.bound = '1';
+      copyTextBtn.addEventListener('click', ()=>copyMessageText(msgWrap));
+    }
+  }
+
+  function wireAdminExportForMessage(msgWrap){
+    if(!isAdminUser || !msgWrap) return;
+    const bubble = msgWrap.querySelector('.bubble');
+    if(!bubble) return;
+    let tools = msgWrap.querySelector('.bubble-tools');
+    if(!tools){
+      tools = document.createElement('div');
+      tools.className = 'bubble-tools';
+      bubble.appendChild(tools);
+    }
+    let copyBtn = msgWrap.querySelector('.admin-copy-btn');
+    if(!copyBtn){
+      copyBtn = document.createElement('button');
+      copyBtn.type = 'button';
+      copyBtn.className = 'btn btn-ghost small admin-export-btn admin-copy-btn';
+      copyBtn.textContent = 'Copy Image';
+      tools.appendChild(copyBtn);
+    }
+    let downloadBtn = msgWrap.querySelector('.admin-download-btn');
+    if(!downloadBtn){
+      downloadBtn = document.createElement('button');
+      downloadBtn.type = 'button';
+      downloadBtn.className = 'btn btn-ghost small admin-export-btn admin-download-btn';
+      downloadBtn.textContent = 'Download Image';
+      tools.appendChild(downloadBtn);
+    }
+    if(copyBtn.dataset.bound !== '1'){
+      copyBtn.dataset.bound = '1';
+      copyBtn.addEventListener('click', ()=>copyMessageAsImage(msgWrap));
+    }
+    if(downloadBtn.dataset.bound !== '1'){
+      downloadBtn.dataset.bound = '1';
+      downloadBtn.addEventListener('click', ()=>downloadMessageAsImage(msgWrap));
+    }
+  }
+  messagesEl.querySelectorAll('.msg.user').forEach(wireUserMessageTools);
+  if(isAdminUser){
+    messagesEl.querySelectorAll('.msg.assistant').forEach(wireAdminExportForMessage);
+  }
+
+  // Typing indicator helpers (temporary assistant bubble)
+  let typingNode = null;
+  let typingTimer = null;
+  function showTyping(){
+    if (typingNode) return;
+    const wrap = document.createElement('div');
+    wrap.className = 'msg assistant typing incoming';
+    wrap.setAttribute('data-typing','1');
+    const avatar = document.createElement('div');
+    avatar.className = 'avatar'; avatar.textContent='A';
+    const bubble = document.createElement('div'); bubble.className='bubble';
+    const meta = document.createElement('div'); meta.className='meta'; meta.textContent='assistant - typing...';
+    const textEl = document.createElement('div'); textEl.className='text';
+    textEl.innerHTML = '<span class="dots"><span></span><span></span><span></span></span>';
+    bubble.appendChild(meta); bubble.appendChild(textEl); wrap.appendChild(avatar); wrap.appendChild(bubble);
+    messagesEl.appendChild(wrap);
+    typingNode = wrap;
+    requestAnimationFrame(()=>{ wrap.classList.add('enter'); setTimeout(()=>wrap.classList.remove('incoming','enter'), 450); });
+    try{ messagesEl.scrollTo({ top: messagesEl.scrollHeight, behavior:'smooth'});}catch(_){ messagesEl.scrollTop = messagesEl.scrollHeight; }
+    clearTimeout(typingTimer);
+    typingTimer = setTimeout(()=>{ hideTyping(); }, 18000);
+  }
+  function hideTyping(){ if(typingNode && typingNode.parentNode){ typingNode.parentNode.removeChild(typingNode); } typingNode=null; clearTimeout(typingTimer); typingTimer=null; }
+
+  // Prefer Server-Sent Events for live updates
+  function startSSE(){
+    if(sse){ return true; }
+    try{
+      const u = new URL('{{ url_for("chat_sse") }}', window.location.origin);
+      if(lastSeen){ u.searchParams.set('since', lastSeen); }
+      sse = new EventSource(u);
+      sse.onopen = ()=>{
+        console.debug('sse: open');
+        sseRetryMs = 1000;
+        if(window.__pollTimer){ clearInterval(window.__pollTimer); window.__pollTimer = null; }
+      };
+      sse.addEventListener('maintenance', ()=>{
+        window.location.href = '{{ url_for("logout") }}';
+      });
+      sse.onmessage = (evt)=>{
+        try{
+          const it = JSON.parse(evt.data);
+          if(it && it.sender === 'assistant'){ hideTyping(); }
+          appendMsg(it);
+          lastSeen = it.created_at || lastSeen;
+        }catch(e){ console.warn('sse parse', e); };
+      };
+      sse.onerror = (e)=>{
+        console.debug('sse: error', e);
+        try{ sse.close(); }catch(_){}
+        sse = null;
+        // Temporary fallback only; keep trying to restore SSE.
+        startPoll();
+        if(sseRetryTimer){ clearTimeout(sseRetryTimer); }
+        sseRetryTimer = setTimeout(()=>{ startSSE(); }, sseRetryMs);
+        sseRetryMs = Math.min(30000, sseRetryMs * 2);
+      };
+      return true;
+    }catch(e){ return false; }
+  }
+
+  // Fallback: short polling
+  function startPoll(){
+    if(window.__pollTimer){ return; }
+    function tick(){
+      const u = new URL('{{ url_for("chat_messages") }}', window.location.origin);
+      if(lastSeen){ u.searchParams.set('since', lastSeen); }
+      fetch(u, {cache:'no-store', headers:{'Cache-Control':'no-store'}})
+        .then(r=>r.json())
+        .then(items=>{
+          if(items.length){
+            items.forEach(it=>{ if(it.sender==='assistant'){ hideTyping(); } appendMsg(it); });
+            lastSeen = items[items.length-1].created_at;
+          }
+        })
+        .catch(()=>{});
+    }
+    tick();
+    window.__pollTimer = setInterval(tick, 3000);
+  }
+
+  // Start SSE; if it fails, fall back to polling
+  if(!startSSE()){ startPoll(); }
+  // Render math in server-rendered messages once on load
+  renderMath(messagesEl);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+  setMessagesBottomPad(true);
+
+  // Auto-resize textarea
+  function autoresize(){
+    box.style.height = 'auto';
+    box.style.height = Math.max(56, Math.min(180, box.scrollHeight)) + 'px';
+  }
+  function syncMessagePreview(){
+    if(!msgMathPreview || !box) return;
+    const raw = (box.value || '').trim();
+    if(!raw || raw.indexOf('$$') === -1){
+      msgMathPreview.classList.add('muted');
+      msgMathPreview.textContent = 'Math preview appears here when you insert from calculator.';
+      return;
+    }
+    msgMathPreview.classList.remove('muted');
+    msgMathPreview.textContent = raw;
+    renderMath(msgMathPreview);
+  }
+  let ocrStatusTimer = null;
+  function clearOcrStatusTimer(){
+    if(ocrStatusTimer){
+      clearTimeout(ocrStatusTimer);
+      ocrStatusTimer = null;
+    }
+  }
+  function setOcrStatus(message, level, options = {}){
+    if(!ocrStatus) return;
+    clearOcrStatusTimer();
+    const text = String(message || '').trim();
+    if(!text){
+      ocrStatus.textContent = '';
+      ocrStatus.hidden = true;
+      ocrStatus.classList.remove('muted', 'success', 'error');
+      return;
+    }
+    ocrStatus.hidden = false;
+    ocrStatus.textContent = text;
+    ocrStatus.classList.remove('muted', 'success', 'error');
+    if(level === 'success'){
+      ocrStatus.classList.add('success');
+    }else if(level === 'error'){
+      ocrStatus.classList.add('error');
+    }else{
+      ocrStatus.classList.add('muted');
+    }
+    const autoHideMs = Number(options.autoHideMs) || 0;
+    if(autoHideMs > 0){
+      ocrStatusTimer = setTimeout(()=>{
+        setOcrStatus('', 'muted');
+      }, autoHideMs);
+    }
+  }
+
+  function cancelFeatureMenuClose(){
+    if(featureMenuCloseTimer){
+      clearTimeout(featureMenuCloseTimer);
+      featureMenuCloseTimer = null;
+    }
+  }
+
+  function scheduleFeatureMenuClose(){
+    cancelFeatureMenuClose();
+    featureMenuCloseTimer = setTimeout(()=>{
+      setFeatureLauncherOpen(false);
+    }, 220);
+  }
+
+  function setFeatureLauncherOpen(open){
+    if(!composerTools || !featureLauncher) return;
+    cancelFeatureMenuClose();
+    composerTools.classList.toggle('is-open', Boolean(open));
+    featureLauncher.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+
+  function isFeatureMenuLockedOpen(){
+    return Boolean(composerTools && composerTools.classList.contains('is-open'));
+  }
+
+  function formatBytes(size){
+    const n = Number(size) || 0;
+    if(n <= 0){ return '0 B'; }
+    if(n < 1024){ return `${n} B`; }
+    if(n < 1024 * 1024){ return `${(n / 1024).toFixed(1)} KB`; }
+    return `${(n / (1024 * 1024)).toFixed(2)} MB`;
+  }
+
+  function clearPendingOcrImage(options = {}){
+    const keepStatus = Boolean(options.keepStatus);
+    const preserveObjectUrl = Boolean(options.preserveObjectUrl);
+    pendingOcrFile = null;
+    if(pendingOcrObjectUrl){
+      if(!preserveObjectUrl){
+        try{
+          URL.revokeObjectURL(pendingOcrObjectUrl);
+        }catch(_){ /* noop */ }
+      }
+      pendingOcrObjectUrl = '';
+    }
+    if(ocrPreview){ ocrPreview.hidden = true; }
+    if(ocrPreviewImg){ ocrPreviewImg.removeAttribute('src'); }
+    if(ocrPreviewMeta){ ocrPreviewMeta.textContent = ''; }
+    if(ocrFileInput){ ocrFileInput.value = ''; }
+    if(!keepStatus){ setOcrStatus('', 'muted'); }
+  }
+
+  function setPendingOcrImage(file, sourceLabel){
+    if(!file){
+      setOcrStatus('No image selected.', 'error');
+      return;
+    }
+    const mime = String(file.type || '').toLowerCase();
+    if(mime && !mime.startsWith('image/')){
+      setOcrStatus('Only image files are supported.', 'error');
+      return;
+    }
+    clearPendingOcrImage({ keepStatus: true });
+    pendingOcrFile = file;
+    pendingOcrObjectUrl = URL.createObjectURL(file);
+    if(ocrPreviewImg){ ocrPreviewImg.src = pendingOcrObjectUrl; }
+    if(ocrPreview){
+      ocrPreview.hidden = false;
+    }
+    if(ocrPreviewMeta){
+      const source = sourceLabel ? `${sourceLabel} - ` : '';
+      const fileName = file.name || 'clipboard-image';
+      ocrPreviewMeta.textContent = `${source}${fileName} - ${formatBytes(file.size)}`;
+    }
+    setOcrStatus('Image attached. Press Send to upload and send.', 'success', { autoHideMs: 2200 });
+  }
+
+  function clearCalcFormulaStatusTimer(){
+    if(calcFormulaStatusTimer){
+      clearTimeout(calcFormulaStatusTimer);
+      calcFormulaStatusTimer = null;
+    }
+  }
+
+  function setCalcFormulaStatus(message, level, options = {}){
+    if(!calcFormulaStatus) return;
+    clearCalcFormulaStatusTimer();
+    const text = String(message || '').trim();
+    if(!text){
+      calcFormulaStatus.textContent = '';
+      calcFormulaStatus.hidden = true;
+      calcFormulaStatus.classList.remove('muted', 'success', 'error');
+      return;
+    }
+    calcFormulaStatus.hidden = false;
+    calcFormulaStatus.textContent = text;
+    calcFormulaStatus.classList.remove('muted', 'success', 'error');
+    if(level === 'success'){
+      calcFormulaStatus.classList.add('success');
+    }else if(level === 'error'){
+      calcFormulaStatus.classList.add('error');
+    }else{
+      calcFormulaStatus.classList.add('muted');
+    }
+    const autoHideMs = Number(options.autoHideMs) || 0;
+    if(autoHideMs > 0){
+      calcFormulaStatusTimer = setTimeout(()=>setCalcFormulaStatus('', 'muted'), autoHideMs);
+    }
+  }
+
+  function clearCalcFormulaImage(options = {}){
+    const keepStatus = Boolean(options.keepStatus);
+    pendingCalcFormulaFile = null;
+    if(pendingCalcFormulaObjectUrl){
+      try{ URL.revokeObjectURL(pendingCalcFormulaObjectUrl); }catch(_){ /* noop */ }
+      pendingCalcFormulaObjectUrl = '';
+    }
+    if(calcFormulaPreviewImg){ calcFormulaPreviewImg.removeAttribute('src'); }
+    if(calcFormulaPreviewWrap){ calcFormulaPreviewWrap.hidden = true; }
+    if(calcFormulaMeta){ calcFormulaMeta.textContent = ''; }
+    if(calcFormulaFileInput){ calcFormulaFileInput.value = ''; }
+    if(calcFormulaExtractBtn){ calcFormulaExtractBtn.disabled = true; }
+    if(calcFormulaClearBtn){ calcFormulaClearBtn.disabled = true; }
+    if(!keepStatus){ setCalcFormulaStatus('', 'muted'); }
+  }
+
+  function setCalcFormulaImage(file, sourceLabel){
+    if(!file){
+      setCalcFormulaStatus('No image selected.', 'error');
+      return;
+    }
+    const mime = String(file.type || '').toLowerCase();
+    if(mime && !mime.startsWith('image/')){
+      setCalcFormulaStatus('Only image files are supported.', 'error');
+      return;
+    }
+    clearCalcFormulaImage({ keepStatus: true });
+    pendingCalcFormulaFile = file;
+    pendingCalcFormulaObjectUrl = URL.createObjectURL(file);
+    if(calcFormulaPreviewImg){ calcFormulaPreviewImg.src = pendingCalcFormulaObjectUrl; }
+    if(calcFormulaPreviewWrap){ calcFormulaPreviewWrap.hidden = false; }
+    if(calcFormulaMeta){
+      const source = sourceLabel ? `${sourceLabel} - ` : '';
+      const fileName = file.name || 'clipboard-image';
+      calcFormulaMeta.textContent = `${source}${fileName} - ${formatBytes(file.size)}`;
+    }
+    if(calcFormulaExtractBtn){ calcFormulaExtractBtn.disabled = false; }
+    if(calcFormulaClearBtn){ calcFormulaClearBtn.disabled = false; }
+    setCalcFormulaStatus('Image ready. Click Extract LaTeX.', 'muted');
+  }
+
+  function isCalcExtendedOpen(){
+    return Boolean(
+      calcPanel &&
+      calcPanel.classList.contains('is-open') &&
+      document.body.classList.contains('calc-extended')
+    );
+  }
+
+  function syncCalcFormulaVisibility(){
+    if(!calcFormulaOcr) return;
+    if(isCalcExtendedOpen()){
+      calcFormulaOcr.hidden = false;
+      if(calcFormulaHint){ calcFormulaHint.hidden = false; }
+    }else{
+      calcFormulaOcr.hidden = true;
+      clearCalcFormulaImage({ keepStatus: false });
+    }
+  }
+
+  async function processCalcFormulaImage(file){
+    if(!file){
+      setCalcFormulaStatus('Attach or paste a formula image first.', 'error');
+      return;
+    }
+    if(calcFormulaBusy) return;
+    calcFormulaBusy = true;
+    if(calcFormulaUploadBtn){ calcFormulaUploadBtn.disabled = true; }
+    if(calcFormulaExtractBtn){ calcFormulaExtractBtn.disabled = true; }
+    if(calcFormulaClearBtn){ calcFormulaClearBtn.disabled = true; }
+    setCalcFormulaStatus('Extracting formula LaTeX...', 'muted');
+    try{
+      const data = new FormData();
+      data.append('image', file);
+      const resp = await fetch('{{ url_for("chat_ocr_math") }}', {
+        method: 'POST',
+        body: data
+      });
+      let payload = null;
+      try{
+        payload = await resp.json();
+      }catch(_){
+        payload = null;
+      }
+      if(!resp.ok || !payload || !payload.ok){
+        const reason = (payload && payload.error) ? payload.error : 'Could not extract formula LaTeX.';
+        throw new Error(reason);
+      }
+      const latex = String(payload.latex || '').trim();
+      if(!latex){
+        throw new Error('No formula was extracted from this image.');
+      }
+      if(calcInput){
+        calcInput.value = latex;
+        updateCalcPreview();
+        calcInput.focus();
+      }
+      setCalcFormulaStatus('Formula extracted and inserted into Expression.', 'success', { autoHideMs: 2800 });
+      clearCalcFormulaImage({ keepStatus: true });
+    }catch(err){
+      setCalcFormulaStatus((err && err.message) ? err.message : 'Formula extraction failed.', 'error');
+    }finally{
+      calcFormulaBusy = false;
+      if(calcFormulaUploadBtn){ calcFormulaUploadBtn.disabled = false; }
+      if(calcFormulaExtractBtn){ calcFormulaExtractBtn.disabled = !pendingCalcFormulaFile; }
+      if(calcFormulaClearBtn){ calcFormulaClearBtn.disabled = !pendingCalcFormulaFile; }
+    }
+  }
+
+  function handlePasteImage(event){
+    if(!isAdminUser) return;
+    if(isCalcExtendedOpen()) return;
+    const clip = event.clipboardData;
+    if(!clip || !clip.items || !clip.items.length) return;
+    const imgItem = Array.from(clip.items).find((it)=>String(it.type || '').startsWith('image/'));
+    if(!imgItem) return;
+    const file = imgItem.getAsFile();
+    if(!file) return;
+    event.preventDefault();
+    setPendingOcrImage(file, 'Pasted image');
+    setFeatureLauncherOpen(false);
+  }
+
+  function handleCalcFormulaPaste(event){
+    if(!isCalcExtendedOpen() || calcFormulaBusy) return;
+    const clip = event.clipboardData;
+    if(!clip || !clip.items || !clip.items.length) return;
+    const imgItem = Array.from(clip.items).find((it)=>String(it.type || '').startsWith('image/'));
+    if(!imgItem) return;
+    const file = imgItem.getAsFile();
+    if(!file) return;
+    event.preventDefault();
+    setCalcFormulaImage(file, 'Pasted image');
+  }
+
+  if(featureLauncher){
+    featureLauncher.addEventListener('click', (e)=>{
+      e.preventDefault();
+      setFeatureLauncherOpen(!isFeatureMenuLockedOpen());
+    });
+  }
+  if(composerTools){
+    composerTools.addEventListener('mouseenter', ()=>{
+      if(window.matchMedia('(hover: hover)').matches){
+        setFeatureLauncherOpen(true);
+      }
+    });
+    composerTools.addEventListener('mouseleave', ()=>{
+      if(window.matchMedia('(hover: hover)').matches){
+        scheduleFeatureMenuClose();
+      }
+    });
+  }
+  if(featureMenu){
+    featureMenu.addEventListener('mouseenter', cancelFeatureMenuClose);
+    featureMenu.addEventListener('mouseleave', ()=>{
+      if(window.matchMedia('(hover: hover)').matches){
+        scheduleFeatureMenuClose();
+      }
+    });
+  }
+  document.addEventListener('click', (e)=>{
+    if(!composerTools || !isFeatureMenuLockedOpen()) return;
+    if(composerTools.contains(e.target)) return;
+    setFeatureLauncherOpen(false);
+  });
+  if(calcToggle){
+    calcToggle.addEventListener('click', ()=>setFeatureLauncherOpen(false));
+  }
+  if(ocrAttachBtn){
+    ocrAttachBtn.addEventListener('click', ()=>{
+      if(ocrFileInput){
+        ocrFileInput.click();
+      }
+      setFeatureLauncherOpen(false);
+    });
+  }
+  if(ocrFileInput){
+    ocrFileInput.addEventListener('change', ()=>{
+      const file = ocrFileInput.files && ocrFileInput.files[0];
+      if(!file) return;
+      setPendingOcrImage(file, 'Uploaded image');
+    });
+  }
+  if(ocrClearBtn){
+    ocrClearBtn.addEventListener('click', ()=>clearPendingOcrImage({ keepStatus: false }));
+  }
+  if(ocrPreviewImg){
+    ocrPreviewImg.addEventListener('error', ()=>{
+      clearPendingOcrImage({ keepStatus: true });
+      setOcrStatus('Could not preview this image. Please try another file.', 'error');
+    });
+  }
+  box.addEventListener('paste', handlePasteImage);
+  form.addEventListener('paste', handlePasteImage);
+  document.addEventListener('paste', handleCalcFormulaPaste);
+
+  if(calcFormulaUploadBtn){
+    calcFormulaUploadBtn.addEventListener('click', ()=>{
+      if(!isCalcExtendedOpen()){
+        setCalcFormulaStatus('Open Extend View to use formula image extraction.', 'error');
+        return;
+      }
+      if(calcFormulaFileInput){ calcFormulaFileInput.click(); }
+    });
+  }
+  if(calcFormulaFileInput){
+    calcFormulaFileInput.addEventListener('change', ()=>{
+      const file = calcFormulaFileInput.files && calcFormulaFileInput.files[0];
+      if(!file) return;
+      setCalcFormulaImage(file, 'Uploaded image');
+    });
+  }
+  if(calcFormulaExtractBtn){
+    calcFormulaExtractBtn.addEventListener('click', ()=>processCalcFormulaImage(pendingCalcFormulaFile));
+  }
+  if(calcFormulaClearBtn){
+    calcFormulaClearBtn.addEventListener('click', ()=>clearCalcFormulaImage({ keepStatus: false }));
+  }
+  if(calcFormulaPreviewImg){
+    calcFormulaPreviewImg.addEventListener('error', ()=>{
+      clearCalcFormulaImage({ keepStatus: true });
+      setCalcFormulaStatus('Could not preview this formula image.', 'error');
+    });
+  }
+
+  setOcrStatus('', 'muted');
+  setCalcFormulaStatus('', 'muted');
+  syncCalcFormulaVisibility();
+  box.addEventListener('input', autoresize);
+  box.addEventListener('input', syncMessagePreview);
+  autoresize();
+  syncMessagePreview();
+  setTimeout(()=>setMessagesBottomPad(true),0);
+
+  // Submit helpers
+  form.addEventListener('submit', (e)=>{
+    e.preventDefault();
+    if(!isAdminUser && pendingOcrFile){
+      clearPendingOcrImage({ keepStatus: false, preserveObjectUrl: false });
+      setOcrStatus('Image attachment is available for admin account only.', 'error');
+      return;
+    }
+    const text = (box.value || '').trim();
+    if(!text && !pendingOcrFile) return;
+    const imageToSend = pendingOcrFile;
+    const imagePreviewUrl = imageToSend ? String(pendingOcrObjectUrl || '') : '';
+    const optimisticText = text || '';
+    // Optimistic render
+    const tempKey = 'temp-' + Date.now();
+    pendingTemps.push({
+      key: tempKey,
+      text: optimisticText,
+      hasImage: Boolean(imageToSend),
+      tempImageUrl: imagePreviewUrl || '',
+    });
+    appendMsg({
+      RowKey: tempKey,
+      sender: 'user',
+      text: optimisticText,
+      image_url: imagePreviewUrl || '',
+      image_filename: imageToSend ? (imageToSend.name || 'chat-image') : '',
+      created_at: new Date().toISOString()
+    });
+    box.value = '';
+    autoresize();
+    syncMessagePreview();
+    clearPendingOcrImage({ keepStatus: true, preserveObjectUrl: Boolean(imagePreviewUrl) });
+    setOcrStatus('', 'muted');
+    setMessagesBottomPad(true);
+    showTyping();
+    sendBtn.disabled = true; sendBtn.textContent='Sending...';
+    const data = new FormData();
+    data.set('text', text);
+    if(imageToSend){
+      data.append('image', imageToSend, imageToSend.name || 'chat-image');
+    }
+    fetch(form.action, {
+      method:'POST',
+      body:data,
+      headers: { 'X-Requested-With': 'XMLHttpRequest' }
+    })
+      .then(async (resp)=>{
+        let payload = null;
+        try{ payload = await resp.json(); }catch(_){ payload = null; }
+        if(!resp.ok || !payload || !payload.ok){
+          const reason = (payload && payload.error) ? payload.error : 'Failed to send message.';
+          throw new Error(reason);
+        }
+        if(payload.image_requested && !payload.image_uploaded){
+          const reason = payload.image_error || 'Image upload failed.';
+          setOcrStatus(`Image was not uploaded: ${reason}`, 'error');
+        }else{
+          clearPendingOcrImage({ keepStatus: true, preserveObjectUrl: false });
+          setOcrStatus('', 'muted');
+        }
+      })
+      .catch((err)=>{
+        console.error(err);
+        setOcrStatus((err && err.message) ? err.message : 'Failed to send message.', 'error');
+      })
+      .finally(()=>{ sendBtn.disabled=false; sendBtn.textContent='Send'; });
+  });
+
+  // Enter to send, Shift+Enter for newline
+  box.addEventListener('keydown', (e)=>{
+    if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); form.requestSubmit(); }
+  });
+
+  function insertAtCursor(input, text, cursorBack){
+    const start = input.selectionStart || 0;
+    const end = input.selectionEnd || 0;
+    const before = input.value.slice(0, start);
+    const after = input.value.slice(end);
+    input.value = before + text + after;
+    const back = Number(cursorBack) || 0;
+    const pos = start + text.length - back;
+    input.focus();
+    input.setSelectionRange(pos, pos);
+  }
+
+  function setCalcMathFieldValue(expr){
+    if(!calcMathField) return;
+    try{
+      const next = String(expr || '');
+      if((calcMathField.value || '') !== next){
+        calcMathField.value = next;
+      }
+    }catch(_){ /* noop */ }
+  }
+
+  function updateCalcPreview(options = {}){
+    if(!calcPreview || !calcInput) return;
+    const fromMathField = Boolean(options.fromMathField);
+    const expr = (calcInput.value || '').trim();
+    if(!fromMathField){ setCalcMathFieldValue(expr); }
+    if(!expr){
+      calcPreview.classList.add('muted');
+      calcPreview.textContent = 'Preview: add an expression to see formatted math.';
+      updateCalcGraph('');
+      return;
+    }
+    calcPreview.classList.remove('muted');
+    calcPreview.textContent = '$$' + expr + '$$';
+    renderMath(calcPreview);
+    updateCalcGraph(expr);
+  }
+
+  function toGraphExpr(raw){
+    let expr = (raw || '').trim();
+    if(!expr) return '';
+    if(expr.includes('=')){
+      const parts = expr.split('=');
+      if(parts.length >= 2){
+        expr = `(${parts[0]})-(${parts.slice(1).join('=')})`;
+      }
+    }
+    return expr
+      .replace(/[\u2212\u2013]/g, '-')
+      .replace(/\u00D7/g, '*')
+      .replace(/\u00F7/g, '/')
+      .replace(/\\cdot|\\times/g, '*')
+      .replace(/\\div/g, '/')
+      .replace(/\\left|\\right/g, '')
+      .replace(/\\operatorname\{([^{}]+)\}/g, '$1')
+      .replace(/\\pi/g, 'Math.PI')
+      .replace(/\\theta/g, 'x')
+      .replace(/\\sin/g, 'Math.sin')
+      .replace(/\\cos/g, 'Math.cos')
+      .replace(/\\tan/g, 'Math.tan')
+      .replace(/\\ln/g, 'Math.log')
+      .replace(/\\log/g, 'Math.log10')
+      .replace(/\\sqrt\{([^{}]+)\}/g, 'Math.sqrt($1)')
+      .replace(/\\frac\{([^{}]+)\}\{([^{}]+)\}/g, '(($1)/($2))')
+      .replace(/(\d)\s*x/g, '$1*x')
+      .replace(/x\s*(\d)/g, 'x*$1')
+      .replace(/x\s*\(/g, 'x*(')
+      .replace(/\)\s*x/g, ')*x')
+      .replace(/(\d)\s*\(/g, '$1*(')
+      .replace(/\)\s*(\d)/g, ')*$1')
+      .replace(/\)\s*\(/g, ')*(')
+      .replace(/\^/g, '**')
+      .replace(/[{}]/g, '')
+      .trim();
+  }
+
+  function niceGraphStep(rawStep){
+    if(!Number.isFinite(rawStep) || rawStep <= 0) return 1;
+    const pow = Math.pow(10, Math.floor(Math.log10(rawStep)));
+    const norm = rawStep / pow;
+    let step = 1;
+    if(norm <= 1) step = 1;
+    else if(norm <= 2) step = 2;
+    else if(norm <= 5) step = 5;
+    else step = 10;
+    return step * pow;
+  }
+
+  function updateCalcGraph(expr){
+    if(!calcGraph || !calcGraphHint) return;
+    const ctx = calcGraph.getContext('2d');
+    const rect = calcGraph.getBoundingClientRect();
+    const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+    const drawW = Math.max(300, Math.floor(rect.width * dpr));
+    const drawH = Math.max(140, Math.floor(rect.height * dpr));
+    if(calcGraph.width !== drawW || calcGraph.height !== drawH){
+      calcGraph.width = drawW;
+      calcGraph.height = drawH;
+    }
+    const w = calcGraph.width;
+    const h = calcGraph.height;
+    ctx.clearRect(0, 0, w, h);
+    ctx.fillStyle = 'rgba(148,163,184,0.08)';
+    ctx.fillRect(0, 0, w, h);
+
+    const parsed = toGraphExpr(expr);
+    if(!parsed){
+      ctx.strokeStyle = 'rgba(148,163,184,0.35)';
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(0, h/2); ctx.lineTo(w, h/2); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(w/2, 0); ctx.lineTo(w/2, h); ctx.stroke();
+      calcGraphHint.textContent = 'Graph preview for expressions (example: x^2-4 or 6x+5=14).';
+      calcGraphHint.classList.add('muted');
+      return;
+    }
+    let fn;
+    try{
+      fn = new Function('x', `return ${parsed};`);
+    }catch(_){
+      calcGraphHint.textContent = 'Unable to plot this expression yet.';
+      calcGraphHint.classList.remove('muted');
+      return;
+    }
+    const scaleX = graphState.baseScaleX * graphState.zoom;
+    const scaleY = graphState.baseScaleY * graphState.zoom;
+    const centerX = w/2 + graphState.offsetX;
+    const centerY = h/2 + graphState.offsetY;
+    const xMin = -centerX / scaleX;
+    const xMax = (w - centerX) / scaleX;
+    const yMin = -(h - centerY) / scaleY;
+    const yMax = centerY / scaleY;
+
+    const gridColor = 'rgba(148,163,184,0.18)';
+    const axisColor = 'rgba(148,163,184,0.36)';
+    const labelColor = 'rgba(188,202,221,0.9)';
+    const xStep = niceGraphStep((xMax - xMin) / 8);
+    const yStep = niceGraphStep((yMax - yMin) / 6);
+
+    ctx.lineWidth = 1;
+    ctx.font = `${Math.max(11, Math.round(11 * dpr))}px "IBM Plex Sans", ui-sans-serif, system-ui`;
+    ctx.fillStyle = labelColor;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+
+    let startXTick = Math.ceil(xMin / xStep) * xStep;
+    let lastXLabelPx = -Infinity;
+    for(let xv = startXTick; xv <= xMax + xStep * 0.5; xv += xStep){
+      const px = centerX + xv * scaleX;
+      const isAxis = Math.abs(xv) < xStep * 0.5;
+      ctx.strokeStyle = isAxis ? axisColor : gridColor;
+      ctx.beginPath();
+      ctx.moveTo(px, 0);
+      ctx.lineTo(px, h);
+      ctx.stroke();
+      if(!isAxis && px - lastXLabelPx >= 54 * dpr){
+        const tx = Math.max(14 * dpr, Math.min(w - 14 * dpr, px));
+        const ty = Math.max(2 * dpr, Math.min(h - 16 * dpr, centerY + 4 * dpr));
+        ctx.fillText(Number(xv.toFixed(2)).toString(), tx, ty);
+        lastXLabelPx = px;
+      }
+    }
+
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    let startYTick = Math.ceil(yMin / yStep) * yStep;
+    let lastYLabelPx = Infinity;
+    for(let yv = startYTick; yv <= yMax + yStep * 0.5; yv += yStep){
+      const py = centerY - yv * scaleY;
+      const isAxis = Math.abs(yv) < yStep * 0.5;
+      ctx.strokeStyle = isAxis ? axisColor : gridColor;
+      ctx.beginPath();
+      ctx.moveTo(0, py);
+      ctx.lineTo(w, py);
+      ctx.stroke();
+      if(!isAxis && Math.abs(py - lastYLabelPx) >= 28 * dpr){
+        const tx = Math.max(18 * dpr, Math.min(w - 6 * dpr, centerX - 6 * dpr));
+        const ty = Math.max(10 * dpr, Math.min(h - 10 * dpr, py));
+        ctx.fillText(Number(yv.toFixed(2)).toString(), tx, ty);
+        lastYLabelPx = py;
+      }
+    }
+
+    let started = false;
+    ctx.strokeStyle = '#34d399';
+    ctx.lineWidth = Math.max(2, 2 * dpr * 0.7);
+    ctx.beginPath();
+    for(let px = 0; px < w; px += 1){
+      const x = (px - centerX) / scaleX;
+      let y;
+      try{ y = fn(x); }catch(_){ y = NaN; }
+      if(!Number.isFinite(y)){ started = false; continue; }
+      const py = centerY - (y * scaleY);
+      if(py < -1000 || py > h + 1000){ started = false; continue; }
+      if(!started){ ctx.moveTo(px, py); started = true; }
+      else{ ctx.lineTo(px, py); }
+    }
+    ctx.stroke();
+    calcGraphHint.textContent = `Graph preview (x: ${xMin.toFixed(2)} to ${xMax.toFixed(2)}). Drag to pan, wheel or +/- to zoom.`;
+    calcGraphHint.classList.add('muted');
+  }
+
+  function zoomGraph(multiplier){
+    graphState.zoom = Math.max(0.25, Math.min(8, graphState.zoom * multiplier));
+    updateCalcGraph((calcInput && calcInput.value) || '');
+  }
+
+  function resetGraphView(){
+    graphState.zoom = 1;
+    graphState.offsetX = 0;
+    graphState.offsetY = 0;
+    updateCalcGraph((calcInput && calcInput.value) || '');
+  }
+
+  function setCalcOpen(open){
+    if(!calcPanel || !calcToggle) return;
+    if(calcCloseTimer){ clearTimeout(calcCloseTimer); calcCloseTimer = null; }
+    if(open && document.body.classList.contains('chat-theater')){
+      document.body.classList.remove('chat-theater');
+      if(typeof setWideLabel === 'function'){ setWideLabel(); }
+    }
+    if(open){
+      calcPanel.hidden = false;
+      calcPanel.setAttribute('aria-hidden', 'false');
+      if(calcBackdrop){ calcBackdrop.hidden = !document.body.classList.contains('calc-extended'); }
+      requestAnimationFrame(()=>{
+        document.body.classList.add('calc-open');
+        calcPanel.classList.add('is-open');
+        renderMath(calcPanel);
+      });
+    }else{
+      document.body.classList.remove('calc-extended');
+      document.body.classList.remove('calc-open');
+      calcPanel.classList.remove('is-open');
+      calcPanel.setAttribute('aria-hidden', 'true');
+      phoneBasicPadActive = false;
+      if(calcBackdrop){ calcBackdrop.hidden = true; }
+      calcCloseTimer = setTimeout(()=>{ calcPanel.hidden = true; }, 260);
+    }
+    calcToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if(calcExtendBtn){
+      const on = document.body.classList.contains('calc-extended');
+      calcExtendBtn.textContent = on ? 'Normal View' : 'Extend View';
+    }
+    applyNotationFilter();
+    syncCalcFormulaVisibility();
+    if(open && calcInput){ calcInput.focus(); }
+    setTimeout(()=>setMessagesBottomPad(true), 40);
+  }
+
+  function toggleCalcExtended(){
+    if(window.matchMedia('(max-width: 768px)').matches) return;
+    if(calcPanel && calcPanel.hidden){ setCalcOpen(true); }
+    document.body.classList.toggle('calc-extended');
+    ensureTabAllowedForMode();
+    if(calcBackdrop){ calcBackdrop.hidden = !document.body.classList.contains('calc-extended'); }
+    if(calcExtendBtn){
+      const on = document.body.classList.contains('calc-extended');
+      calcExtendBtn.textContent = on ? 'Normal View' : 'Extend View';
+    }
+    applyNotationFilter();
+    updateCalcGraph((calcInput && calcInput.value) || '');
+    syncCalcFormulaVisibility();
+  }
+
+  function insertCalcExpressionToChat(){
+    if(!calcInput || !box) return;
+    const expr = (calcInput.value || '').trim();
+    if(!expr) return;
+    const needsBreak = box.value && !/\s$/.test(box.value);
+    const formatted = '$$' + expr + '$$';
+    insertAtCursor(box, (needsBreak ? '\n' : '') + formatted, 0);
+    autoresize();
+    syncMessagePreview();
+    setMessagesBottomPad(true);
+    box.focus();
+    if(document.body.classList.contains('calc-extended')){
+      setCalcOpen(false);
+      return;
+    }
+    if(document.body.classList.contains('phone-view') || window.matchMedia('(max-width: 768px)').matches){
+      setCalcOpen(false);
+    }
+  }
+
+  function isAdvancedEnabled(){
+    return document.body.classList.contains('calc-extended');
+  }
+
+  function getActiveCalcTab(){
+    return calcTabs.find(tab => tab.classList.contains('is-active'))?.dataset.calcTab || 'algebra';
+  }
+
+  function setActiveCalcTab(tabName){
+    const requested = calcTabs.find(tab => tab.dataset.calcTab === tabName);
+    const fallback = calcTabs.find(tab => tab.dataset.calcTab === 'algebra') || calcTabs[0];
+    const target = requested || fallback;
+    calcTabs.forEach(t=>{
+      const active = t === target;
+      t.classList.toggle('is-active', active);
+      t.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+  }
+
+  function ensureTabAllowedForMode(){
+    if(!isAdvancedEnabled() && getActiveCalcTab() === 'advanced'){
+      setActiveCalcTab('algebra');
+    }
+  }
+
+  function isCompactNotationMode(){
+    return !document.body.classList.contains('calc-extended');
+  }
+
+  function isPhoneMode(){
+    return document.body.classList.contains('phone-view') || window.matchMedia('(max-width: 768px)').matches;
+  }
+
+  function isDesktopNormalMode(){
+    return (
+      !document.body.classList.contains('calc-extended') &&
+      !isPhoneMode()
+    );
+  }
+
+  function syncBasicToggleButton(){
+    if(!calcBasicToggleBtn) return;
+    if(isPhoneMode()){
+      calcBasicToggleBtn.hidden = false;
+      calcBasicToggleBtn.textContent = phoneBasicPadActive ? 'Notation' : 'Basic';
+      calcBasicToggleBtn.setAttribute('aria-pressed', phoneBasicPadActive ? 'true' : 'false');
+    }else{
+      calcBasicToggleBtn.hidden = true;
+      calcBasicToggleBtn.setAttribute('aria-pressed', 'false');
+      phoneBasicPadActive = false;
+    }
+  }
+
+  function syncNotationSearchUi(query){
+    const active = Boolean(query);
+    if(calcPanel){ calcPanel.classList.toggle('calc-search-active', active); }
+    if(calcNotationClearBtn){ calcNotationClearBtn.hidden = !active; }
+  }
+
+  function syncNotationVisibility(){
+    if(!calcPanel) return;
+    const phoneBasicMode = isPhoneMode() && phoneBasicPadActive;
+    const hideNotation = (isDesktopNormalMode() && compactNotationCollapsed) || phoneBasicMode;
+    calcPanel.classList.toggle('hide-notation-pane', hideNotation);
+    calcPanel.classList.toggle('phone-basic-mode', phoneBasicMode);
+  }
+
+  function syncNumberPadVisibility(){
+    if(!calcPanel) return;
+    const activeTab = getActiveCalcTab();
+    const searchActive = normalizeNotationQuery(calcNotationSearch ? calcNotationSearch.value : '').length > 0;
+    let hidePad = false;
+    if(searchActive){
+      hidePad = true;
+    }else if(isPhoneMode()){
+      hidePad = !phoneBasicPadActive;
+    }else if(isDesktopNormalMode()){
+      hidePad = false;
+    }else{
+      hidePad = isCompactNotationMode() && activeTab !== 'algebra' && !compactNotationCollapsed;
+    }
+    calcPanel.classList.toggle('hide-number-pad', hidePad);
+  }
+
+  function normalizeNotationQuery(value){
+    return String(value || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  }
+
+  function applyNotationFilter(){
+    const query = normalizeNotationQuery(calcNotationSearch ? calcNotationSearch.value : '');
+    const searchActive = Boolean(query);
+    if(!isDesktopNormalMode()){ compactNotationCollapsed = false; }
+    if(!isPhoneMode()){ phoneBasicPadActive = false; }
+    if(searchActive && isPhoneMode()){ phoneBasicPadActive = false; }
+    syncNotationSearchUi(query);
+    syncBasicToggleButton();
+    syncNotationVisibility();
+    ensureTabAllowedForMode();
+    syncNumberPadVisibility();
+    const activeTab = getActiveCalcTab();
+    const advancedEnabled = isAdvancedEnabled();
+    let anyVisibleGroup = false;
+
+    calcTopicGroups.forEach(group => {
+      const isAdvancedGroup = group.dataset.calcGroup === 'advanced';
+      if(isAdvancedGroup && !advancedEnabled){
+        group.classList.remove('is-active', 'is-search-result');
+        return;
+      }
+      let groupHasMatch = false;
+      group.querySelectorAll('.calc-key').forEach(btn => {
+        const searchable = normalizeNotationQuery([
+          btn.dataset.keywords || '',
+          btn.dataset.insert || '',
+          btn.getAttribute('aria-label') || '',
+          btn.textContent || ''
+        ].join(' '));
+        const match = !query || searchable.includes(query);
+        btn.classList.toggle('is-hidden-by-search', !match);
+        if(match){ groupHasMatch = true; }
+      });
+
+      const showGroup = query ? groupHasMatch : (group.dataset.calcGroup === activeTab);
+      group.classList.toggle('is-active', showGroup);
+      group.classList.toggle('is-search-result', Boolean(query) && groupHasMatch);
+      if(showGroup){ anyVisibleGroup = true; }
+    });
+
+    if(calcNotationNoResults){
+      calcNotationNoResults.hidden = !(query && !anyVisibleGroup);
+    }
+    if(calcPanel){ renderMath(calcPanel); }
+  }
+
+  if(calcToggle && calcPanel){
+    calcToggle.addEventListener('click', ()=>setCalcOpen(!calcPanel.classList.contains('is-open')));
+  }
+  if(calcCloseBtn){
+    calcCloseBtn.addEventListener('click', ()=>setCalcOpen(false));
+  }
+  if(calcExtendBtn){
+    calcExtendBtn.addEventListener('click', toggleCalcExtended);
+  }
+  if(calcBackdrop){
+    calcBackdrop.addEventListener('click', ()=>{
+      if(document.body.classList.contains('calc-extended')){
+        document.body.classList.remove('calc-extended');
+        if(calcBackdrop){ calcBackdrop.hidden = true; }
+        if(calcExtendBtn){ calcExtendBtn.textContent = 'Extend View'; }
+        syncCalcFormulaVisibility();
+      }else{
+        setCalcOpen(false);
+      }
+    });
+  }
+  if(calcCloseFooterBtn){
+    calcCloseFooterBtn.addEventListener('click', ()=>setCalcOpen(false));
+  }
+
+  calcTabs.forEach(tab=>{
+    tab.addEventListener('click', ()=>{
+      if(tab.dataset.calcTab === 'advanced' && !isAdvancedEnabled()){
+        return;
+      }
+      if(isPhoneMode()){
+        phoneBasicPadActive = false;
+      }
+      const currentTab = getActiveCalcTab();
+      if(isDesktopNormalMode() && currentTab === tab.dataset.calcTab){
+        compactNotationCollapsed = !compactNotationCollapsed;
+      }else{
+        compactNotationCollapsed = false;
+      }
+      setActiveCalcTab(tab.dataset.calcTab);
+      applyNotationFilter();
+      if(calcInput){ calcInput.focus(); }
+    });
+  });
+
+  if(calcNotationSearch){
+    calcNotationSearch.addEventListener('input', applyNotationFilter);
+    calcNotationSearch.addEventListener('keydown', (e)=>{
+      if(e.key === 'Escape'){
+        e.stopPropagation();
+        calcNotationSearch.value = '';
+        applyNotationFilter();
+      }
+    });
+  }
+  if(calcNotationClearBtn){
+    calcNotationClearBtn.addEventListener('click', ()=>{
+      if(!calcNotationSearch) return;
+      calcNotationSearch.value = '';
+      applyNotationFilter();
+      calcNotationSearch.focus();
+    });
+  }
+
+  document.querySelectorAll('.calc-key').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      if(!calcInput) return;
+      const action = btn.dataset.calcAction;
+      if(action === 'clear'){
+        calcInput.value = '';
+        updateCalcPreview();
+        calcInput.focus();
+        return;
+      }
+      if(action === 'backspace'){
+        const start = calcInput.selectionStart || 0;
+        const end = calcInput.selectionEnd || 0;
+        if(start !== end){
+          calcInput.value = calcInput.value.slice(0, start) + calcInput.value.slice(end);
+          calcInput.setSelectionRange(start, start);
+        }else if(start > 0){
+          calcInput.value = calcInput.value.slice(0, start - 1) + calcInput.value.slice(start);
+          calcInput.setSelectionRange(start - 1, start - 1);
+        }
+        calcInput.focus();
+        updateCalcPreview();
+        return;
+      }
+      const token = btn.dataset.insert;
+      if(!token) return;
+      const cursorBack = Number(btn.dataset.cursor) || (token.endsWith('()') ? 1 : 0);
+      insertAtCursor(calcInput, token, cursorBack);
+      updateCalcPreview();
+    });
+  });
+
+  if(calcInput){
+    calcInput.addEventListener('input', updateCalcPreview);
+    calcInput.addEventListener('keydown', (e)=>{
+      if(e.key === 'Enter'){
+        e.preventDefault();
+        insertCalcExpressionToChat();
+      }
+    });
+  }
+  if(calcMathField){
+    calcMathField.addEventListener('input', ()=>{
+      if(calcEditorSyncLock || !calcInput) return;
+      calcEditorSyncLock = true;
+      try{
+        calcInput.value = String(calcMathField.value || '');
+        updateCalcPreview({ fromMathField: true });
+      }finally{
+        calcEditorSyncLock = false;
+      }
+    });
+  }
+  if(calcPreviewEditorWrap && calcMathField){
+    calcPreviewEditorWrap.addEventListener('click', ()=>{
+      try{ calcMathField.focus(); }catch(_){ /* noop */ }
+    });
+  }
+  if(calcToChatBtn){
+    calcToChatBtn.addEventListener('click', insertCalcExpressionToChat);
+  }
+  if(calcBasicToggleBtn){
+    calcBasicToggleBtn.addEventListener('click', ()=>{
+      if(!isPhoneMode()) return;
+      phoneBasicPadActive = !phoneBasicPadActive;
+      applyNotationFilter();
+      if(calcInput && !phoneBasicPadActive){ calcInput.focus(); }
+    });
+  }
+  if(graphZoomInBtn){ graphZoomInBtn.addEventListener('click', ()=>zoomGraph(1.2)); }
+  if(graphZoomOutBtn){ graphZoomOutBtn.addEventListener('click', ()=>zoomGraph(1/1.2)); }
+  if(graphResetBtn){ graphResetBtn.addEventListener('click', resetGraphView); }
+  if(calcGraph){
+    calcGraph.addEventListener('wheel', (e)=>{
+      e.preventDefault();
+      zoomGraph(e.deltaY < 0 ? 1.12 : 1/1.12);
+    }, { passive: false });
+    calcGraph.addEventListener('pointerdown', (e)=>{
+      graphState.isDragging = true;
+      graphState.dragX = e.clientX;
+      graphState.dragY = e.clientY;
+      calcGraph.setPointerCapture(e.pointerId);
+    });
+    calcGraph.addEventListener('pointermove', (e)=>{
+      if(!graphState.isDragging) return;
+      const dx = e.clientX - graphState.dragX;
+      const dy = e.clientY - graphState.dragY;
+      graphState.dragX = e.clientX;
+      graphState.dragY = e.clientY;
+      const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+      graphState.offsetX += dx * dpr;
+      graphState.offsetY += dy * dpr;
+      updateCalcGraph((calcInput && calcInput.value) || '');
+    });
+    const stopDrag = ()=>{ graphState.isDragging = false; };
+    calcGraph.addEventListener('pointerup', stopDrag);
+    calcGraph.addEventListener('pointercancel', stopDrag);
+    calcGraph.addEventListener('pointerleave', stopDrag);
+  }
+  if(calcGraphWrap && typeof ResizeObserver !== 'undefined'){
+    const graphResizeObserver = new ResizeObserver(()=>{
+      updateCalcGraph((calcInput && calcInput.value) || '');
+    });
+    graphResizeObserver.observe(calcGraphWrap);
+  }
+  document.querySelectorAll('.calc-template').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      if(!calcInput) return;
+      calcInput.value = btn.dataset.template || '';
+      updateCalcPreview();
+      calcInput.focus();
+    });
+  });
+
+  updateCalcPreview();
+  applyNotationFilter();
+
+  // Handle resizes / orientation / zoom
+  window.addEventListener('resize', ()=>{
+    setMessagesBottomPad();
+    if(!isDesktopNormalMode()){ compactNotationCollapsed = false; }
+    if(!isPhoneMode()){ phoneBasicPadActive = false; }
+    applyNotationFilter();
+    syncCalcFormulaVisibility();
+    updateCalcGraph((calcInput && calcInput.value) || '');
+  });
+  window.addEventListener('orientationchange', ()=>setTimeout(()=>setMessagesBottomPad(true), 150));
+  document.addEventListener('keydown', (e)=>{
+    if(e.key === 'Escape' && isFeatureMenuLockedOpen()){
+      setFeatureLauncherOpen(false);
+    }
+    if(e.key === 'Escape' && calcPanel && !calcPanel.hidden){
+      if(document.body.classList.contains('calc-extended')){
+        document.body.classList.remove('calc-extended');
+        if(calcBackdrop){ calcBackdrop.hidden = true; }
+        if(calcExtendBtn){ calcExtendBtn.textContent = 'Extend View'; }
+        syncCalcFormulaVisibility();
+      }else{
+        setCalcOpen(false);
+      }
+    }
+  });
+
+  // Wide-mode (chat box only) toggle
+  const fsBtn = document.getElementById('fsBtn');
+  const settingsWideBtn = document.getElementById('settingWideToggle');
+  const settingsDeleteBtn = document.getElementById('settingDeleteChatBtn');
+  function inWide(){ return document.body.classList.contains('chat-theater'); }
+  function setWideLabel(){
+    const label = inWide() ? 'Exit Wide' : 'Wide Mode';
+    if(fsBtn){ fsBtn.textContent = label; }
+    if(settingsWideBtn){ settingsWideBtn.textContent = label; }
+  }
+  function toggleWide(){
+    document.body.classList.toggle('chat-theater');
+    setTimeout(()=>setMessagesBottomPad(true), 60);
+    setWideLabel();
+  }
+  if(fsBtn){ fsBtn.addEventListener('click', toggleWide); setWideLabel(); }
+  if(settingsWideBtn){ settingsWideBtn.addEventListener('click', toggleWide); setWideLabel(); }
+  if(settingsDeleteBtn && clearForm){ settingsDeleteBtn.addEventListener('click', ()=>clearForm.requestSubmit()); }
+</script>
+{% endblock %}

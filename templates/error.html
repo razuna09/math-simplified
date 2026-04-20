@@ -1,0 +1,14 @@
+{% extends 'base.html' %}
+{% block content %}
+  <section class="card">
+    <h2>{{ error_title or 'Error' }}</h2>
+    <p style="white-space: pre-wrap;">{{ error_message or 'An error occurred.' }}</p>
+    {% if suggestion %}
+    <div class="hint">{{ suggestion }}</div>
+    {% endif %}
+    <div style="margin-top:1rem;">
+      <a class="btn" href="{{ url_for('index') }}">Back to Home</a>
+    </div>
+  </section>
+{% endblock %}
+

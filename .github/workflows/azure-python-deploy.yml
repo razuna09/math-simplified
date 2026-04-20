@@ -1,0 +1,122 @@
+name: Build and deploy Python app to Azure Web App - Mathsimplied
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Use Python 3.10 on runner
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Prepare build folders
+        run: |
+          rm -rf wheels .python_packages
+          mkdir -p wheels
+          mkdir -p .python_packages/lib/site-packages
+
+      # Build wheels for *all* requirements using manylinux2014 cp310.
+      # --only-binary=:all: ensures we never pull an sdist (which would break on App Service).
+      - name: Build manylinux wheels (manylinux2014 cp310, only prebuilt)
+        run: |
+          docker run --rm -v "${{ github.workspace }}":/src quay.io/pypa/manylinux2014_x86_64 /bin/bash -lc '
+            set -euo pipefail
+            cd /src
+            if [ -x /opt/python/cp310-cp310/bin/pip ]; then
+              /opt/python/cp310-cp310/bin/pip wheel --only-binary=:all: -r /src/requirements.txt -w /src/wheels
+            else
+              echo "cp310 not found in manylinux container"; ls -la /opt/python || true; exit 2
+            fi
+            echo "Wheels saved to /src/wheels:"; ls -lah /src/wheels || true
+          '
+
+      # Make absolutely sure we have pandas *and* numpy wheels in ./wheels.
+      - name: Ensure pandas & numpy wheels exist (cp310 manylinux2014)
+        run: |
+          set -euo pipefail
+          docker run --rm -v "${{ github.workspace }}":/src quay.io/pypa/manylinux2014_x86_64 /bin/bash -lc '
+            set -euo pipefail
+            cd /src
+            PYBIN=/opt/python/cp310-cp310/bin/pip
+            $PYBIN download --only-binary=:all: --dest /src/wheels "numpy>=1.23.2" "pandas==2.2.2"
+            ls -lah /src/wheels | egrep -i "numpy|pandas" || true
+          '
+          test -f wheels/pandas-* && test -f wheels/numpy-* || { echo "Missing pandas/numpy wheels in ./wheels"; exit 1; }
+
+      - name: Show wheels (debug)
+        run: |
+          echo "Wheels produced (look for numpy/pandas):"
+          ls -lah wheels || true
+          ls -lah wheels | egrep -i 'numpy|pandas' || true
+
+      # Install strictly from ./wheels into the vendored .python_packages we ship with the app.
+      # Install numpy first, then pandas, then the rest of requirements (still offline).
+      - name: Install built wheels into .python_packages (offline)
+        run: |
+          set -euo pipefail
+          PYDST=.python_packages/lib/site-packages
+          python3 -m pip install --upgrade pip wheel
+          python3 -m pip install --no-index --find-links=./wheels --target="$PYDST" numpy
+          python3 -m pip install --no-index --find-links=./wheels --target="$PYDST" pandas
+          python3 -m pip install --no-index --find-links=./wheels --target="$PYDST" -r requirements.txt
+
+      # Hard-fail CI if numpy/pandas can't be imported from .python_packages.
+      - name: Sanity check — verify numpy & pandas import on runner
+        env:
+          PYTHONPATH: ${{ github.workspace }}/.python_packages/lib/site-packages
+        run: |
+          set -euo pipefail
+          echo "Listing sample .python_packages contents:"
+          ls -la .python_packages/lib/site-packages | sed -n '1,200p' || true
+          echo "Running import checks:"
+          python3 - <<'PY'
+          import os, sys, importlib
+          sys.path.insert(0, os.path.abspath(".python_packages/lib/site-packages"))
+          for m in ("numpy", "pandas", "cryptography"):
+              mod = importlib.import_module(m)
+              print(m, "->", getattr(mod, "__version__", "?"), "@", getattr(mod, "__file__", "?"))
+          PY
+
+      - name: Create deploy.zip (include .python_packages)
+        run: |
+          set -euo pipefail
+          ZIP_OUT=deploy.zip
+          zip -r "$ZIP_OUT" . \
+            -x "venv/*" "antenv/*" ".venv/*" \
+               ".git/*" ".github/*" "__pycache__/*" "*.pyc"
+          ls -lh "$ZIP_OUT"
+
+      - name: Upload artifact for deployment
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-deploy-zip
+          path: deploy.zip
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - name: Download artifact from build job
+        uses: actions/download-artifact@v4
+        with:
+          name: python-deploy-zip
+
+      - name: Deploy to Azure Web App
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: 'mathsimplified'
+          slot-name: 'Production'
+          publish-profile: ${{ secrets.__publishingprofilesecretname__ }}
+          package: deploy.zip

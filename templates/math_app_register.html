@@ -1,0 +1,135 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="auth center card">
+  <div class="auth-header">
+    <h2>Create account</h2>
+    <p class="muted">Join MathSimplified AI</p>
+  </div>
+  <form method="post" class="auth-form" id="registerForm" onsubmit="return validateForm()">
+    <label>Username</label>
+    <input name="username" placeholder="yourname" autocomplete="username" required>
+    
+    <label>Password</label>
+    <div class="password-wrap">
+      <input id="password" type="password" name="password" 
+             placeholder="Enter password" 
+             autocomplete="new-password" 
+             required
+             pattern="^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$"
+             title="Password must be at least 8 characters long and include uppercase, lowercase, number and special character">
+      <button class="btn btn-ghost small" type="button" onclick="togglePassword('password')" tabindex="-1">Show</button>
+    </div>
+    <div class="password-requirements muted">
+      Password must:
+      <ul>
+        <li id="length">Be at least 8 characters long</li>
+        <li id="uppercase">Include uppercase letter</li>
+        <li id="lowercase">Include lowercase letter</li>
+        <li id="number">Include number</li>
+        <li id="special">Include special character</li>
+      </ul>
+    </div>
+
+    <label>Confirm Password</label>
+    <div class="password-wrap">
+      <input id="confirmPassword" type="password" name="confirm_password" 
+             placeholder="Confirm password" 
+             autocomplete="new-password" 
+             required>
+      <button class="btn btn-ghost small" type="button" onclick="togglePassword('confirmPassword')" tabindex="-1">Show</button>
+    </div>
+    
+    <button type="submit" class="btn">Register</button>
+  </form>
+  <p class="muted">Already have an account? <a href="{{ url_for('login') }}">Login</a></p>
+</div>
+
+<style>
+.password-requirements {
+  margin: 10px 0;
+  font-size: 0.9em;
+}
+.password-requirements ul {
+  margin: 5px 0;
+  padding-left: 20px;
+}
+.password-requirements li {
+  margin: 3px 0;
+  color: var(--muted);
+}
+.password-requirements li.valid {
+  color: var(--success);
+}
+.password-match-error {
+  color: var(--danger);
+  font-size: 0.9em;
+  margin-top: 5px;
+}
+</style>
+
+<script>
+function togglePassword(inputId) {
+  const input = document.getElementById(inputId);
+  const button = input.nextElementSibling;
+  if (input.type === 'password') {
+    input.type = 'text';
+    button.textContent = 'Hide';
+  } else {
+    input.type = 'password';
+    button.textContent = 'Show';
+  }
+}
+
+function validatePassword(password) {
+  const requirements = {
+    length: password.length >= 8,
+    uppercase: /[A-Z]/.test(password),
+    lowercase: /[a-z]/.test(password),
+    number: /[0-9]/.test(password),
+    special: /[@$!%*?&]/.test(password)
+  };
+
+  // Update visual indicators
+  Object.keys(requirements).forEach(req => {
+    const element = document.getElementById(req);
+    if (requirements[req]) {
+      element.classList.add('valid');
+    } else {
+      element.classList.remove('valid');
+    }
+  });
+
+  return Object.values(requirements).every(req => req);
+}
+
+function validateForm() {
+  const password = document.getElementById('password').value;
+  const confirmPassword = document.getElementById('confirmPassword').value;
+  
+  // Remove existing error message if any
+  const existingError = document.querySelector('.password-match-error');
+  if (existingError) {
+    existingError.remove();
+  }
+
+  if (!validatePassword(password)) {
+    return false;
+  }
+
+  if (password !== confirmPassword) {
+    const errorDiv = document.createElement('div');
+    errorDiv.className = 'password-match-error';
+    errorDiv.textContent = 'Passwords do not match';
+    document.getElementById('confirmPassword').parentNode.insertAdjacentElement('afterend', errorDiv);
+    return false;
+  }
+
+  return true;
+}
+
+// Live password validation
+document.getElementById('password').addEventListener('input', function() {
+  validatePassword(this.value);
+});
+</script>
+{% endblock %}

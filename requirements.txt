@@ -1,0 +1,11 @@
+Flask
+azure-data-tables
+azure-core
+azure-storage-blob
+requests
+cryptography
+gunicorn
+gevent
+Pillow
+pytesseract
+
