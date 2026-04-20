@@ -12,10 +12,13 @@
     <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
   </head>
-  <body>
+  <body class="{% if not is_logged_in and request.endpoint in ['login', 'register'] %}public-entry{% endif %}">
     <nav class="topbar">
       <div class="brand">MathSimplified AI <span class="muted" style="font-weight:500">{{ app_version }}</span></div>
       <div class="nav-actions">
+        {% if not is_logged_in and request.endpoint in ['login', 'register'] %}
+        <button id="themeToggle" class="btn btn-ghost small" type="button">Dark Mode</button>
+        {% endif %}
         {% if is_logged_in %}
         <button id="profileToggle" class="profile-pill" type="button" title="Open profile settings" aria-expanded="false" aria-controls="profileDrawer">
           <span class="profile-pill-avatar">{{ (current_username or "U")[0]|upper }}</span>
@@ -135,12 +138,15 @@
 
     <script>
       (function(){
-        const key = 'theme';
+        const legacyThemeKey = 'theme';
+        const publicThemeKey = 'public_theme';
         const el = document.documentElement;
         const userKey = "{{ current_username or '' }}";
+        const themeKey = userKey ? `theme:${userKey}` : legacyThemeKey;
         const phoneKey = userKey ? `phone_view:${userKey}` : 'phone_view';
         const adminTzKey = userKey ? `admin_timezone:${userKey}` : 'admin_timezone';
         const isAdminUser = {{ 'true' if is_admin_user else 'false' }};
+        const isPublicEntry = {{ 'true' if (not is_logged_in and request.endpoint in ['login', 'register']) else 'false' }};
         const serverAdminTimezone = "{{ admin_timezone or '' }}";
         function applyTheme(t){ el.setAttribute('data-theme', t); }
         function applyPhoneView(on){
@@ -152,9 +158,25 @@
           try{ localStorage.setItem(adminTzKey, tz); }catch(_){}
           window.dispatchEvent(new CustomEvent('admin-timezone-updated', { detail: { timezone: tz } }));
         }
-        const saved = localStorage.getItem(key);
+        let savedTheme = null;
+        try{
+          if(isPublicEntry){
+            savedTheme = localStorage.getItem(publicThemeKey);
+          }else if(userKey){
+            savedTheme = localStorage.getItem(themeKey);
+            if(!savedTheme){
+              const legacyTheme = localStorage.getItem(legacyThemeKey);
+              if(legacyTheme){
+                savedTheme = legacyTheme;
+                localStorage.setItem(themeKey, legacyTheme);
+              }
+            }
+          }else if(!isPublicEntry){
+            savedTheme = localStorage.getItem(legacyThemeKey);
+          }
+        }catch(_){}
         const savedPhone = localStorage.getItem(phoneKey);
-        applyTheme(saved || 'dark');
+        applyTheme(savedTheme || (isPublicEntry ? 'light' : 'dark'));
         applyPhoneView(savedPhone === '1'); // default desktop when no setting exists
         if(isAdminUser){
           const initialTz = serverAdminTimezone || localStorage.getItem(adminTzKey) || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
@@ -170,7 +192,7 @@
           const adminTimezoneNote = document.getElementById('adminTimezoneNote');
           function label(){
             const txt = (el.getAttribute('data-theme')==='dark') ? 'Light' : 'Dark';
-            if(btn){ btn.textContent = txt; }
+            if(btn){ btn.textContent = txt + ' Mode'; }
             if(settingBtn){ settingBtn.textContent = txt; }
             const on = document.body.classList.contains('phone-view');
             if(phoneBtn){ phoneBtn.textContent = on ? 'Desktop View' : 'Phone View'; }
@@ -189,7 +211,11 @@
           function toggleTheme(){
             const cur = el.getAttribute('data-theme') || 'dark';
             const next = (cur==='dark') ? 'light' : 'dark';
-            applyTheme(next); localStorage.setItem(key, next); label();
+            applyTheme(next);
+            try{
+              localStorage.setItem(isPublicEntry ? publicThemeKey : themeKey, next);
+            }catch(_){}
+            label();
           }
           function togglePhoneView(){
             const next = !document.body.classList.contains('phone-view');

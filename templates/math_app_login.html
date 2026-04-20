@@ -1,45 +1,229 @@
 {% extends "base.html" %}
 {% block content %}
 {% if announcement %}
-  {% set level = announcement.get('level','info') %}
-  {% set color = '#2ac3de' %}
-  {% if level == 'success' %}{% set color = '#98c379' %}{% elif level == 'warn' %}{% set color = '#e5c07b' %}{% elif level == 'error' %}{% set color = '#e06c75' %}{% endif %}
-  <div class="card" style="border-left:4px solid {{ color }}; margin-bottom:12px">
-    <h3 style="margin:0 0 6px">{{ announcement.get('title','Announcement') }}</h3>
-    <div class="muted" style="white-space:pre-wrap">{{ announcement.get('message','') }}</div>
+  {% set level = announcement.get('level', 'info') %}
+  {% set color = '#f5f5f5' %}
+  {% if level == 'success' %}{% set color = '#d4d4d4' %}{% elif level == 'warn' %}{% set color = '#a3a3a3' %}{% elif level == 'error' %}{% set color = '#737373' %}{% endif %}
+  <div class="card front-announcement" style="border-left:4px solid {{ color }}">
+    <h3 style="margin:0 0 6px">{{ announcement.get('title', 'Announcement') }}</h3>
+    <div class="muted" style="white-space:pre-wrap">{{ announcement.get('message', '') }}</div>
   </div>
 {% endif %}
-<div class="auth center card">
-  <div class="auth-header">
-    <h2>Welcome back</h2>
-    <p class="muted">Sign in to MathSimplified AI - math simplified</p>
-  </div>
-  <form method="post" class="auth-form">
-    <label>Username</label>
-    <input name="username" placeholder="yourname" autocomplete="username" required>
-    <label>Password</label>
-    <div class="password-wrap">
-      <input id="pw" type="password" name="password" placeholder="********" autocomplete="current-password" required>
-      <button class="btn btn-ghost small" id="togglePw" type="button" tabindex="-1">Show</button>
+
+<section class="front-page">
+  <div class="card front-shell">
+    <div class="front-panel">
+      <span class="front-badge">Academic AI Learning Platform</span>
+      <h1>Dr. Rama Math Studio</h1>
+      <p class="front-tagline">Mathematics learning with AI platform by Dr. Rama Yusvana</p>
+      <p class="muted front-description">
+        A structured space for mathematics learning, guided problem solving, and AI-assisted support.
+      </p>
+
+      <div class="front-actions">
+        <button type="button" class="btn front-register-btn" id="openRegisterModal">Register</button>
+        <a class="btn btn-ghost" href="mailto:rama@uthm.edu.my">Contact Dr. Rama</a>
+      </div>
+
+      <div class="front-contact-block">
+        <div class="front-point">
+          <strong>Direct contact</strong>
+          <span><a href="mailto:rama@uthm.edu.my">rama@uthm.edu.my</a></span>
+        </div>
+        <div class="front-point">
+          <strong>Access request</strong>
+          <span>Use the Register button to send a registration email request.</span>
+        </div>
+      </div>
     </div>
-    <button type="submit" class="btn">Login</button>
-  </form>
-  <p class="muted">No account? <a href="{{ url_for('register') }}">Create one</a></p>
-  {% if session.session_id %}
-  <p class="muted">Session: {{ session.session_id }}</p>
-  {% endif %}
-</div>
+
+    <aside class="front-login-card" id="loginCard">
+      <div class="auth-header">
+        <h2>Member Login</h2>
+        <p class="muted">Sign in to continue to the learning platform.</p>
+      </div>
+      <form method="post" class="auth-form">
+        <label>Username</label>
+        <input name="username" placeholder="yourname" autocomplete="username" required>
+
+        <label>Password</label>
+        <div class="password-wrap">
+          <input id="pw" type="password" name="password" placeholder="********" autocomplete="current-password" required>
+          <button class="btn btn-ghost small" id="togglePw" type="button" tabindex="-1">Show</button>
+        </div>
+
+        <button type="submit" class="btn">Login</button>
+      </form>
+
+      <p class="muted front-auth-note">
+        New users should register first. Approval and next steps will be handled by Dr. Rama Yusvana.
+      </p>
+      <p class="muted front-support-note">
+        Technical issues, password reset, or account help?
+        <button type="button" class="front-inline-link" id="openSupportModal">Contact support</button>
+      </p>
+      {% if session.session_id %}
+      <p class="muted">Session: {{ session.session_id }}</p>
+      {% endif %}
+    </aside>
+  </div>
+</section>
+
+<div class="front-modal-backdrop" id="registerBackdrop" hidden></div>
+<div class="front-modal-backdrop" id="supportBackdrop" hidden></div>
+<section
+  class="front-modal-shell"
+  id="registerModal"
+  role="dialog"
+  aria-modal="true"
+  aria-hidden="true"
+  aria-labelledby="registerModalTitle"
+  hidden
+>
+  <div class="card front-modal-card">
+    <div class="front-modal-head">
+      <div>
+        <h2 id="registerModalTitle">Register</h2>
+        <p class="muted">Send your request to Dr. Rama Yusvana or contact <a href="mailto:rama@uthm.edu.my">rama@uthm.edu.my</a>.</p>
+      </div>
+      <button type="button" class="btn btn-ghost small" id="closeRegisterModal">Close</button>
+    </div>
+
+    <form method="post" action="{{ url_for('register_interest_contact') }}" class="front-register-form">
+      <label for="registerName">Full name</label>
+      <input id="registerName" name="name" placeholder="Your full name" autocomplete="name" required>
+
+      <label for="registerEmail">Email address</label>
+      <input id="registerEmail" type="email" name="email" placeholder="you@example.com" autocomplete="email" required>
+
+      <label for="registerInstitution">School or institution</label>
+      <input id="registerInstitution" name="institution" placeholder="Optional">
+
+      <label for="registerMessage">Message</label>
+      <textarea
+        id="registerMessage"
+        name="message"
+        placeholder="I would like to register for Dr. Rama Math Studio. Please contact me with the next steps."
+        required
+      ></textarea>
+
+      <button type="submit" class="btn">Send Registration Request</button>
+    </form>
+  </div>
+</section>
+
+<section
+  class="front-modal-shell"
+  id="supportModal"
+  role="dialog"
+  aria-modal="true"
+  aria-hidden="true"
+  aria-labelledby="supportModalTitle"
+  hidden
+>
+  <div class="card front-modal-card">
+    <div class="front-modal-head">
+      <div>
+        <h2 id="supportModalTitle">Contact Support</h2>
+        <p class="muted">Use this form for password reset requests, technical issues, or account access help.</p>
+      </div>
+      <button type="button" class="btn btn-ghost small" id="closeSupportModal">Close</button>
+    </div>
+
+    <form method="post" action="{{ url_for('support_contact') }}" class="front-register-form">
+      <label for="supportName">Full name</label>
+      <input id="supportName" name="name" placeholder="Your full name" autocomplete="name" required>
+
+      <label for="supportEmail">Email address</label>
+      <input id="supportEmail" type="email" name="email" placeholder="you@example.com" autocomplete="email" required>
+
+      <label for="supportTopic">Issue type</label>
+      <select id="supportTopic" name="topic">
+        <option value="technical issue">Technical issue</option>
+        <option value="password reset">Password reset</option>
+        <option value="account access">Account access</option>
+        <option value="other">Other</option>
+      </select>
+
+      <label for="supportMessage">Details</label>
+      <textarea
+        id="supportMessage"
+        name="message"
+        placeholder="Describe the issue, the account affected, and anything you need help with."
+        required
+      ></textarea>
+
+      <button type="submit" class="btn">Send Support Request</button>
+    </form>
+  </div>
+</section>
 
 <script>
   document.addEventListener('DOMContentLoaded', ()=>{
     const pw = document.getElementById('pw');
-    const t = document.getElementById('togglePw');
-    if(pw && t){
-      t.addEventListener('click', ()=>{
-        const s = pw.getAttribute('type') === 'password' ? 'text' : 'password';
-        pw.setAttribute('type', s);
-        t.textContent = (s==='password') ? 'Show' : 'Hide';
+    const togglePw = document.getElementById('togglePw');
+    const openModalBtn = document.getElementById('openRegisterModal');
+    const closeModalBtn = document.getElementById('closeRegisterModal');
+    const registerBackdrop = document.getElementById('registerBackdrop');
+    const registerModal = document.getElementById('registerModal');
+    const registerFirstField = document.getElementById('registerName');
+    const openSupportModalBtn = document.getElementById('openSupportModal');
+    const closeSupportModalBtn = document.getElementById('closeSupportModal');
+    const supportBackdrop = document.getElementById('supportBackdrop');
+    const supportModal = document.getElementById('supportModal');
+    const supportFirstField = document.getElementById('supportName');
+    const shouldOpenModal = {{ 'true' if request.args.get('register') == 'open' else 'false' }};
+    const shouldOpenSupportModal = {{ 'true' if request.args.get('support') == 'open' else 'false' }};
+
+    if(pw && togglePw){
+      togglePw.addEventListener('click', ()=>{
+        const nextType = pw.getAttribute('type') === 'password' ? 'text' : 'password';
+        pw.setAttribute('type', nextType);
+        togglePw.textContent = nextType === 'password' ? 'Show' : 'Hide';
       });
+    }
+
+    function setModal(modal, backdrop, firstField, open){
+      if(!modal || !backdrop){ return; }
+      modal.hidden = !open;
+      backdrop.hidden = !open;
+      modal.setAttribute('aria-hidden', open ? 'false' : 'true');
+      document.body.classList.toggle('modal-open', open);
+      if(open && firstField){
+        window.setTimeout(()=> firstField.focus(), 30);
+      }
+    }
+
+    if(openModalBtn){
+      openModalBtn.addEventListener('click', ()=> setModal(registerModal, registerBackdrop, registerFirstField, true));
+    }
+    if(closeModalBtn){
+      closeModalBtn.addEventListener('click', ()=> setModal(registerModal, registerBackdrop, registerFirstField, false));
+    }
+    if(registerBackdrop){
+      registerBackdrop.addEventListener('click', ()=> setModal(registerModal, registerBackdrop, registerFirstField, false));
+    }
+    if(openSupportModalBtn){
+      openSupportModalBtn.addEventListener('click', ()=> setModal(supportModal, supportBackdrop, supportFirstField, true));
+    }
+    if(closeSupportModalBtn){
+      closeSupportModalBtn.addEventListener('click', ()=> setModal(supportModal, supportBackdrop, supportFirstField, false));
+    }
+    if(supportBackdrop){
+      supportBackdrop.addEventListener('click', ()=> setModal(supportModal, supportBackdrop, supportFirstField, false));
+    }
+    document.addEventListener('keydown', (event)=>{
+      if(event.key === 'Escape'){
+        setModal(registerModal, registerBackdrop, registerFirstField, false);
+        setModal(supportModal, supportBackdrop, supportFirstField, false);
+      }
+    });
+
+    if(shouldOpenModal){
+      setModal(registerModal, registerBackdrop, registerFirstField, true);
+    }
+    if(shouldOpenSupportModal){
+      setModal(supportModal, supportBackdrop, supportFirstField, true);
     }
   });
 </script>

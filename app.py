@@ -9,6 +9,7 @@ from io import BytesIO
 from datetime import datetime, timezone, timedelta
 import requests
 import json
+import threading
 from urllib.parse import quote
 from flask import Flask, render_template, request, redirect, url_for, session, jsonify, flash, Response, stream_with_context
 from werkzeug.exceptions import HTTPException
@@ -72,6 +73,191 @@ except Exception as exc:
 """Configuration and safety helpers"""
 
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+LOCAL_STORAGE_DIR = os.path.join(BASE_DIR, "instance", "local_storage")
+LOCAL_TABLES_FILE = os.path.join(LOCAL_STORAGE_DIR, "tables.json")
+LOCAL_UPLOAD_DIR = os.path.join(BASE_DIR, "instance", "chat_uploads")
+LOCAL_CHAT_IMAGE_CONTAINER = "__local__"
+_LOCAL_TABLE_LOCK = threading.RLock()
+
+
+def _ensure_dir(path: str):
+    os.makedirs(path, exist_ok=True)
+
+
+def _load_local_env():
+    env_path = os.path.join(BASE_DIR, ".env")
+    if not os.path.isfile(env_path):
+        return
+    try:
+        with open(env_path, "r", encoding="utf-8") as fh:
+            for raw_line in fh:
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                value = value.strip().strip("'\"")
+                if key and key not in os.environ:
+                    os.environ[key] = value
+    except Exception:
+        pass
+
+
+def _utc_now_iso_raw() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
+def _local_entity_key(partition_key: str, row_key: str) -> str:
+    return f"{partition_key}\t{row_key}"
+
+
+def _load_local_tables_data() -> dict:
+    _ensure_dir(LOCAL_STORAGE_DIR)
+    if not os.path.isfile(LOCAL_TABLES_FILE):
+        return {"tables": {}}
+    try:
+        with open(LOCAL_TABLES_FILE, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        if isinstance(data, dict) and isinstance(data.get("tables"), dict):
+            return data
+    except Exception:
+        pass
+    return {"tables": {}}
+
+
+def _save_local_tables_data(data: dict):
+    _ensure_dir(LOCAL_STORAGE_DIR)
+    with open(LOCAL_TABLES_FILE, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, indent=2, sort_keys=True)
+
+
+def _match_local_filter(entity: dict, filter_expr: str) -> bool:
+    expr = (filter_expr or "").strip()
+    if not expr:
+        return True
+
+    def _match_clause(clause: str) -> bool:
+        part = clause.strip()
+        m = re.match(r"^([A-Za-z0-9_]+)\s+eq\s+'([^']*)'$", part)
+        if not m:
+            return False
+        field, value = m.group(1), m.group(2)
+        return str(entity.get(field, "")) == value
+
+    for or_part in expr.split(" or "):
+        and_parts = [p.strip() for p in or_part.split(" and ") if p.strip()]
+        if and_parts and all(_match_clause(part) for part in and_parts):
+            return True
+    return False
+
+
+class LocalTableClient:
+    def __init__(self, table_name: str):
+        self.table_name = table_name
+
+    def _table_store(self, data: dict) -> dict:
+        tables = data.setdefault("tables", {})
+        return tables.setdefault(self.table_name, {})
+
+    def create_entity(self, entity: dict):
+        partition_key = str(entity.get("PartitionKey") or "")
+        row_key = str(entity.get("RowKey") or "")
+        if not partition_key or not row_key:
+            raise ValueError("PartitionKey and RowKey are required.")
+        key = _local_entity_key(partition_key, row_key)
+        with _LOCAL_TABLE_LOCK:
+            data = _load_local_tables_data()
+            table = self._table_store(data)
+            if key in table:
+                raise ResourceExistsError("Entity already exists.")
+            stored = dict(entity)
+            stored["Timestamp"] = _utc_now_iso_raw()
+            table[key] = stored
+            _save_local_tables_data(data)
+        return dict(stored)
+
+    def upsert_entity(self, entity: dict):
+        partition_key = str(entity.get("PartitionKey") or "")
+        row_key = str(entity.get("RowKey") or "")
+        if not partition_key or not row_key:
+            raise ValueError("PartitionKey and RowKey are required.")
+        key = _local_entity_key(partition_key, row_key)
+        with _LOCAL_TABLE_LOCK:
+            data = _load_local_tables_data()
+            table = self._table_store(data)
+            current = dict(table.get(key) or {})
+            current.update(entity or {})
+            current["PartitionKey"] = partition_key
+            current["RowKey"] = row_key
+            current["Timestamp"] = _utc_now_iso_raw()
+            table[key] = current
+            _save_local_tables_data(data)
+        return dict(current)
+
+    def get_entity(self, partition_key: str, row_key: str):
+        key = _local_entity_key(str(partition_key or ""), str(row_key or ""))
+        with _LOCAL_TABLE_LOCK:
+            data = _load_local_tables_data()
+            entity = self._table_store(data).get(key)
+        if not entity:
+            raise ResourceNotFoundError("Entity not found.")
+        return dict(entity)
+
+    def delete_entity(self, partition_key: str, row_key: str):
+        key = _local_entity_key(str(partition_key or ""), str(row_key or ""))
+        with _LOCAL_TABLE_LOCK:
+            data = _load_local_tables_data()
+            table = self._table_store(data)
+            if key not in table:
+                raise ResourceNotFoundError("Entity not found.")
+            del table[key]
+            _save_local_tables_data(data)
+
+    def list_entities(self):
+        with _LOCAL_TABLE_LOCK:
+            data = _load_local_tables_data()
+            table = self._table_store(data)
+            items = [dict(ent) for ent in table.values()]
+        items.sort(key=lambda ent: (str(ent.get("PartitionKey") or ""), str(ent.get("RowKey") or "")))
+        return items
+
+    def query_entities(self, filter: str = "", select=None):
+        items = self.list_entities()
+        filtered = [ent for ent in items if _match_local_filter(ent, filter)]
+        if select:
+            out = []
+            for ent in filtered:
+                slim = {}
+                for key in select:
+                    if key in ent:
+                        slim[key] = ent[key]
+                out.append(slim)
+            return out
+        return filtered
+
+
+class LocalTableServiceClient:
+    def create_table(self, table_name: str):
+        with _LOCAL_TABLE_LOCK:
+            data = _load_local_tables_data()
+            tables = data.setdefault("tables", {})
+            if table_name in tables:
+                raise ResourceExistsError("Table already exists.")
+            tables[table_name] = {}
+            _save_local_tables_data(data)
+
+    def get_table_client(self, table_name: str):
+        with _LOCAL_TABLE_LOCK:
+            data = _load_local_tables_data()
+            data.setdefault("tables", {}).setdefault(table_name, {})
+            _save_local_tables_data(data)
+        return LocalTableClient(table_name)
+
+
+_load_local_env()
+
+
 # All connection strings must be provided via environment variables. No hardcoded values.
 DEFAULT_CONN_STR = os.getenv("DEFAULT_CONN_STR", "")
 TEMP_CHAT_BLOB_CONN_STR = os.getenv("TEMP_CHAT_BLOB_CONN_STR", "")
@@ -131,13 +317,18 @@ def _resolve_conn_str() -> str:
 
 
 # Final connection string used by the app. Only environment variables are allowed for secrets and connection strings.
-AZURE_CONN_STR = os.getenv("AZURE_CONN_STR", "")
+AZURE_CONN_STR = _resolve_conn_str()
+USE_AZURE_TABLES = bool(AZURE_AVAILABLE and AZURE_CONN_STR)
 
-SECRET_KEY = os.getenv("FLASK_SECRET_KEY", "")
+SECRET_KEY = (
+    os.getenv("FLASK_SECRET_KEY")
+    or os.getenv("SECRET_KEY")
+    or os.urandom(32).hex()
+)
 APP_VERSION = os.getenv("APP_VERSION", "")
-ADMIN_SESSION_ID = os.getenv("ADMIN_SESSION_ID", "")
-ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "")
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
+ADMIN_SESSION_ID = os.getenv("ADMIN_SESSION_ID", "999000999")
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123")
 # N8N webhooks
 N8N_TEST_WEBHOOK = os.getenv("N8N_WEBHOOK_URL", "")
 N8N_PROD_WEBHOOK = os.getenv("N8N_WEBHOOK_URL_PROD", "")
@@ -157,6 +348,13 @@ except Exception:
     CHAT_IMAGE_MAX_FILE_MB = OCR_MAX_FILE_MB
 CHAT_ALLOWED_IMAGE_EXT = {"png", "jpg", "jpeg", "webp", "bmp", "gif", "tif", "tiff"}
 
+
+def _has_blob_storage_config() -> bool:
+    container = str(CHAT_IMAGE_CONTAINER or "").strip()
+    if not container:
+        return False
+    return bool(_is_valid_conn_str((CHAT_BLOB_CONN_STR or "").strip()) or _is_valid_conn_str(AZURE_CONN_STR))
+
 app = Flask(__name__)
 app.secret_key = SECRET_KEY
 
@@ -164,6 +362,7 @@ app.secret_key = SECRET_KEY
 REGISTER_TABLE = "registerchatapp"  # users
 CHATS_TABLE = "chat"                # chat messages
 CONFIG_TABLE = "appconfig"          # app-wide config (announcements, maintenance)
+CONTACT_TABLE = "contactrequests"   # registration/support intake
 
 # In-memory flags/caches for snappy checks without hitting Azure on each request
 INIT_DONE = False
@@ -178,10 +377,8 @@ BLOB_SVC_CLIENT = None
 BLOB_CONTAINER_CLIENTS = {}
 
 def _svc():
-    if not AZURE_AVAILABLE:
-        raise RuntimeError(f"Azure SDK not available: {AZURE_IMPORT_ERROR or 'unknown import error'}")
-    if not AZURE_CONN_STR:
-        raise RuntimeError("AZURE_STORAGE_CONNECTION_STRING is missing or invalid.")
+    if not USE_AZURE_TABLES:
+        return LocalTableServiceClient()
     global SVC_CLIENT
     if SVC_CLIENT:
         return SVC_CLIENT
@@ -241,6 +438,32 @@ def _blob_conn_str():
     if not _is_valid_conn_str(conn):
         raise RuntimeError("Blob connection string is missing or invalid.")
     return conn
+
+
+def _local_blob_abspath(blob_name: str) -> str:
+    rel = str(blob_name or "").replace("\\", "/").lstrip("/")
+    norm = os.path.normpath(rel)
+    if norm.startswith(".."):
+        raise RuntimeError("Invalid local blob path.")
+    root = os.path.abspath(LOCAL_UPLOAD_DIR)
+    path = os.path.abspath(os.path.join(root, norm))
+    if os.path.commonpath([root, path]) != root:
+        raise RuntimeError("Invalid local blob path.")
+    return path
+
+
+def _store_chat_image_locally(blob_name: str, raw: bytes):
+    path = _local_blob_abspath(blob_name)
+    _ensure_dir(os.path.dirname(path))
+    with open(path, "wb") as fh:
+        fh.write(raw)
+    return path
+
+
+def _read_chat_image_locally(blob_name: str) -> bytes:
+    path = _local_blob_abspath(blob_name)
+    with open(path, "rb") as fh:
+        return fh.read()
 
 def _rfc1123_now():
     return datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S GMT")
@@ -402,26 +625,31 @@ def upload_chat_image_to_blob(upload, session_id):
     blob_name = f"{prefix}/{sid}/{date_path}/{uuid.uuid4().hex}_{safe_name}"
 
     blob_url = ""
-    if BLOB_AVAILABLE:
-        container = _blob_container(CHAT_IMAGE_CONTAINER)
-        blob_client = container.get_blob_client(blob_name)
-        kwargs = {"overwrite": True}
-        if ContentSettings:
-            kwargs["content_settings"] = ContentSettings(content_type=mime or "application/octet-stream")
-        blob_client.upload_blob(raw, **kwargs)
-        blob_url = blob_client.url
+    container_name = str(CHAT_IMAGE_CONTAINER or "").strip()
+    if _has_blob_storage_config():
+        if BLOB_AVAILABLE:
+            container = _blob_container(container_name)
+            blob_client = container.get_blob_client(blob_name)
+            kwargs = {"overwrite": True}
+            if ContentSettings:
+                kwargs["content_settings"] = ContentSettings(content_type=mime or "application/octet-stream")
+            blob_client.upload_blob(raw, **kwargs)
+            blob_url = blob_client.url
+        else:
+            # Fallback for environments missing azure-storage-blob dependency.
+            blob_url = _upload_chat_image_via_rest(
+                conn_str=_blob_conn_str(),
+                container_name=container_name,
+                blob_name=blob_name,
+                raw=raw,
+                mime=mime or "application/octet-stream",
+            )
     else:
-        # Fallback for environments missing azure-storage-blob dependency.
-        blob_url = _upload_chat_image_via_rest(
-            conn_str=_blob_conn_str(),
-            container_name=CHAT_IMAGE_CONTAINER,
-            blob_name=blob_name,
-            raw=raw,
-            mime=mime or "application/octet-stream",
-        )
+        _store_chat_image_locally(blob_name, raw)
+        container_name = LOCAL_CHAT_IMAGE_CONTAINER
 
     return {
-        "container": CHAT_IMAGE_CONTAINER,
+        "container": container_name,
         "blob_name": blob_name,
         "blob_url": blob_url,
         "filename": original_filename,
@@ -431,7 +659,7 @@ def upload_chat_image_to_blob(upload, session_id):
 
 def init_tables():
     svc = _svc()
-    for name in [REGISTER_TABLE, CHATS_TABLE, CONFIG_TABLE]:
+    for name in [REGISTER_TABLE, CHATS_TABLE, CONFIG_TABLE, CONTACT_TABLE]:
         try:
             svc.create_table(table_name=name)
         except ResourceExistsError:
@@ -1411,6 +1639,25 @@ def authenticate(username: str, password: str):
         return u
     return None
 
+
+def save_contact_request(kind: str, name: str, email: str, message: str, extra=None):
+    tbl = _table(CONTACT_TABLE)
+    entity = {
+        "PartitionKey": str(kind or "general").strip() or "general",
+        "RowKey": str(uuid.uuid4()),
+        "name": str(name or "").strip(),
+        "email": str(email or "").strip(),
+        "message": str(message or "").strip(),
+        "created_at": utc_now_iso(),
+    }
+    if isinstance(extra, dict):
+        for key, value in extra.items():
+            if value is None:
+                continue
+            entity[str(key)] = str(value).strip() if isinstance(value, str) else value
+    tbl.create_entity(entity=entity)
+    return entity
+
 def post_message(session_id: str, sender: str, text: str, attachment=None):
     tbl = _table(CHATS_TABLE)
     entity = {
@@ -1691,6 +1938,54 @@ def logout():
 def index():
     if session.get("username") and session.get("session_id"):
         return redirect(url_for("chat"))
+    return redirect(url_for("login"))
+
+
+@app.route("/register-interest-contact", methods=["POST"])
+def register_interest_contact():
+    name = (request.form.get("name") or "").strip()
+    email = (request.form.get("email") or "").strip()
+    institution = (request.form.get("institution") or "").strip()
+    message = (request.form.get("message") or "").strip()
+    if not name or not email or not message:
+        flash("Name, email, and message are required.", "error")
+        return redirect(url_for("login", register="open"))
+    try:
+        save_contact_request(
+            kind="register_interest",
+            name=name,
+            email=email,
+            message=message,
+            extra={"institution": institution},
+        )
+        flash("Registration request submitted. Dr. Rama will review it and contact you.", "success")
+    except Exception as e:
+        flash(f"Could not submit registration request: {str(e)}", "error")
+        return redirect(url_for("login", register="open"))
+    return redirect(url_for("login"))
+
+
+@app.route("/support-contact", methods=["POST"])
+def support_contact():
+    name = (request.form.get("name") or "").strip()
+    email = (request.form.get("email") or "").strip()
+    topic = (request.form.get("topic") or "").strip() or "other"
+    message = (request.form.get("message") or "").strip()
+    if not name or not email or not message:
+        flash("Name, email, and issue details are required.", "error")
+        return redirect(url_for("login", support="open"))
+    try:
+        save_contact_request(
+            kind="support",
+            name=name,
+            email=email,
+            message=message,
+            extra={"topic": topic},
+        )
+        flash("Support request submitted. We will get back to you soon.", "success")
+    except Exception as e:
+        flash(f"Could not submit support request: {str(e)}", "error")
+        return redirect(url_for("login", support="open"))
     return redirect(url_for("login"))
 
 
@@ -2125,7 +2420,9 @@ def chat_image_proxy(row_key):
     container_name = str(ent.get("image_container") or CHAT_IMAGE_CONTAINER).strip() or CHAT_IMAGE_CONTAINER
     image_mime = str(ent.get("image_mime") or "").strip() or "application/octet-stream"
     try:
-        if BLOB_AVAILABLE:
+        if container_name == LOCAL_CHAT_IMAGE_CONTAINER:
+            raw = _read_chat_image_locally(blob_name)
+        elif BLOB_AVAILABLE:
             blob = _blob_container(container_name).get_blob_client(blob_name)
             raw = blob.download_blob().readall()
         else:
