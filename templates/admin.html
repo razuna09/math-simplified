@@ -288,6 +288,51 @@
   </div>
 </section>
 
+<section class="admin-layout admin-layout-single" id="changefeed">
+  <div class="card admin-card">
+    <h3>Change Feed</h3>
+    <p class="muted">Publish short release notes and updates. Visible to all logged-in users via the top bar.</p>
+
+    <form method="post" action="{{ url_for('admin_changefeed_create') }}" class="admin-form-block" enctype="multipart/form-data">
+      <h4>New Article</h4>
+      <label>Title</label>
+      <input name="title" placeholder="Example: Graph display added to chat" required>
+      <label>Body</label>
+      <textarea name="body" rows="5" placeholder="Write a short article explaining what changed, why it matters, and what users can do next." required></textarea>
+      <label>Image (optional)</label>
+      <input type="file" name="image" accept="image/png,image/jpeg,image/webp,image/gif,image/bmp,image/tiff">
+      <div class="admin-actions-row">
+        <button class="btn" type="submit">Publish</button>
+      </div>
+    </form>
+
+    <div class="admin-form-block admin-form-sep">
+      <h4>Recent Articles</h4>
+      {% if changefeed_items %}
+        <div class="feed-admin-list">
+          {% for it in changefeed_items %}
+            <div class="feed-admin-row">
+              <div class="feed-admin-main">
+                <div class="feed-admin-title">{{ it.title }}</div>
+                <div class="muted feed-admin-meta">{{ it.created_at }}</div>
+              </div>
+              <div class="feed-admin-actions">
+                <a class="btn btn-ghost small" href="{{ url_for('changefeed') }}" target="_blank">View</a>
+                <form method="post" action="{{ url_for('admin_changefeed_delete') }}" onsubmit="return confirm('Delete this change feed entry?');">
+                  <input type="hidden" name="row_key" value="{{ it.RowKey }}">
+                  <button class="btn btn-danger small" type="submit">Delete</button>
+                </form>
+              </div>
+            </div>
+          {% endfor %}
+        </div>
+      {% else %}
+        <p class="muted">No change feed entries yet.</p>
+      {% endif %}
+    </div>
+  </div>
+</section>
+
 <script>
   document.body.classList.add('admin-page');
 

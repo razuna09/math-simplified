@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block content %}
+
+<section class="feed-hero card">
+  <div class="feed-hero-inner">
+    <div>
+      <h2>Change Feed</h2>
+      <p class="muted">Product updates, improvements, and fixes.</p>
+    </div>
+    <div class="feed-hero-actions">
+      {% if is_admin_user %}
+      <a class="btn btn-ghost" href="{{ url_for('admin_dashboard') }}#changefeed">Profile Config</a>
+      {% endif %}
+      <a class="btn btn-ghost" href="{{ url_for('chat') }}">Back to Chat</a>
+    </div>
+  </div>
+</section>
+
+<section class="feed-grid">
+  {% for it in items %}
+    <article class="feed-article card">
+      {% if it.image_blob_name or it.image_url %}
+      <div class="feed-article-media">
+        <img
+          src="{{ it.image_preview_url or it.image_url }}"
+          alt="{{ it.image_filename or it.title or 'Change feed image' }}"
+          loading="lazy"
+        >
+      </div>
+      {% endif %}
+      <div class="feed-article-body">
+        <div class="feed-article-meta muted">{{ it.created_at }}</div>
+        <h3 class="feed-article-title">{{ it.title }}</h3>
+        <div class="feed-article-text">{{ it.body }}</div>
+      </div>
+    </article>
+  {% endfor %}
+
+  {% if not items %}
+    <div class="card feed-empty">
+      <h3>No updates yet</h3>
+      <p class="muted">When admins publish updates, they will appear here.</p>
+      {% if is_admin_user %}
+      <p class="muted">Admin: publish from <a href="{{ url_for('admin_dashboard') }}#changefeed">Admin Dashboard</a>.</p>
+      {% endif %}
+    </div>
+  {% endif %}
+</section>
+
+{% endblock %}

@@ -31,7 +31,7 @@
     <div id="messages" class="messages" aria-live="polite" aria-atomic="false">
       {% for m in messages %}
         {% set role = 'assistant' if m['sender']=='assistant' else 'user' %}
-        <div class="msg {{ role }}" data-rk="{{ m.get('RowKey','') }}">
+        <div class="msg {{ role }}" data-rk="{{ m.get('RowKey','') }}"{% if m.get('graph') %} data-graph='{{ m.get("graph") | tojson | forceescape }}'{% endif %}>
           <div class="avatar" aria-hidden="true">{{ 'A' if role=='assistant' else 'Y' }}</div>
         <div class="bubble">
           <div class="meta">{{ m['sender'] }} - {{ m['created_at'] }}</div>
@@ -361,7 +361,9 @@
     if(!el) return;
     const source = String(raw || '');
     el.dataset.rawText = source;
-    el.innerHTML = formatMessageMarkup(source);
+    const trimmed = source.trim();
+    el.hidden = !trimmed;
+    el.innerHTML = trimmed ? formatMessageMarkup(source) : '';
   }
 
   // html2canvas on some macOS browsers skips aria-hidden nodes.
@@ -390,9 +392,13 @@
   window.addEventListener('DOMContentLoaded', () => {
     const messagesEl = document.getElementById('messages');
     if (messagesEl) {
-      messagesEl.querySelectorAll('.msg .text').forEach((el)=>{
-        const raw = el.dataset.rawText || el.textContent || '';
-        setFormattedMessageContent(el, raw);
+      messagesEl.querySelectorAll('.msg').forEach((msgWrap)=>{
+        const textEl = msgWrap.querySelector('.text');
+        if(textEl){
+          const raw = textEl.dataset.rawText || textEl.textContent || '';
+          setFormattedMessageContent(textEl, raw);
+        }
+        syncMessageGraph(msgWrap);
       });
       renderMath(messagesEl);
     }
@@ -509,6 +515,52 @@
     dragY: 0
   };
   let calcEditorSyncLock = false;
+  const messageGraphObservers = new WeakMap();
+
+  function createGraphViewportState(){
+    return {
+      baseScaleX: 24,
+      baseScaleY: 24,
+      zoom: 1,
+      offsetX: 0,
+      offsetY: 0,
+      isDragging: false,
+      dragX: 0,
+      dragY: 0,
+      boundsInitialized: false
+    };
+  }
+
+  function normalizeMessageGraph(graph){
+    if(!graph || typeof graph !== 'object') return null;
+    const expression = String(graph.graph_expression || graph.expression || graph.function || '').trim();
+    if(!expression) return null;
+    const normalized = {
+      graph_type: String(graph.graph_type || graph.type || 'function').trim().toLowerCase(),
+      graph_expression: expression
+    };
+    if(normalized.graph_type !== 'function') return null;
+    ['graph_title','graph_subtitle','graph_hint','graph_x_label','graph_y_label'].forEach((key)=>{
+      const value = String(graph[key] || '').trim();
+      if(value){ normalized[key] = value; }
+    });
+    ['graph_x_min','graph_x_max','graph_y_min','graph_y_max'].forEach((key)=>{
+      const value = Number(graph[key]);
+      if(Number.isFinite(value)){ normalized[key] = value; }
+    });
+    return normalized;
+  }
+
+  function readGraphFromNode(node){
+    if(!node) return null;
+    const raw = node.getAttribute('data-graph');
+    if(!raw) return null;
+    try{
+      return normalizeMessageGraph(JSON.parse(raw));
+    }catch(_){
+      return null;
+    }
+  }
 
   function setMessagesBottomPad(force){
     const at = atBottom();
@@ -577,6 +629,185 @@
     }
   }
 
+  function buildMessageGraphCard(graph){
+    const card = document.createElement('div');
+    card.className = 'msg-graph-card';
+
+    const head = document.createElement('div');
+    head.className = 'msg-graph-head';
+
+    const meta = document.createElement('div');
+    meta.className = 'msg-graph-meta';
+
+    const title = document.createElement('div');
+    title.className = 'msg-graph-title';
+    title.textContent = graph.graph_title || 'Interactive graph';
+    meta.appendChild(title);
+
+    if(graph.graph_subtitle){
+      const subtitle = document.createElement('div');
+      subtitle.className = 'msg-graph-subtitle muted';
+      subtitle.textContent = graph.graph_subtitle;
+      meta.appendChild(subtitle);
+    }
+
+    const tools = document.createElement('div');
+    tools.className = 'msg-graph-tools';
+
+    const zoomOut = document.createElement('button');
+    zoomOut.type = 'button';
+    zoomOut.className = 'msg-graph-btn';
+    zoomOut.textContent = '-';
+    zoomOut.setAttribute('aria-label', 'Zoom out');
+    zoomOut.dataset.graphAction = 'zoom-out';
+
+    const reset = document.createElement('button');
+    reset.type = 'button';
+    reset.className = 'msg-graph-btn';
+    reset.textContent = 'Reset';
+    reset.setAttribute('aria-label', 'Reset graph');
+    reset.dataset.graphAction = 'reset';
+
+    const zoomIn = document.createElement('button');
+    zoomIn.type = 'button';
+    zoomIn.className = 'msg-graph-btn';
+    zoomIn.textContent = '+';
+    zoomIn.setAttribute('aria-label', 'Zoom in');
+    zoomIn.dataset.graphAction = 'zoom-in';
+
+    tools.appendChild(zoomOut);
+    tools.appendChild(reset);
+    tools.appendChild(zoomIn);
+    head.appendChild(meta);
+    head.appendChild(tools);
+
+    const canvas = document.createElement('canvas');
+    canvas.className = 'msg-graph-canvas';
+    canvas.width = 620;
+    canvas.height = 220;
+    canvas.setAttribute('aria-label', graph.graph_title || 'Graph display');
+
+    const hint = document.createElement('div');
+    hint.className = 'msg-graph-hint muted';
+
+    card.appendChild(head);
+    card.appendChild(canvas);
+    card.appendChild(hint);
+    return card;
+  }
+
+  function mountMessageGraphCard(card, graph){
+    if(!card || card.__graphMounted) return;
+    const canvas = card.querySelector('.msg-graph-canvas');
+    const hint = card.querySelector('.msg-graph-hint');
+    const zoomIn = card.querySelector('[data-graph-action="zoom-in"]');
+    const zoomOut = card.querySelector('[data-graph-action="zoom-out"]');
+    const reset = card.querySelector('[data-graph-action="reset"]');
+    if(!canvas || !hint) return;
+
+    const state = createGraphViewportState();
+    const redraw = ()=>drawExpressionGraph(canvas, hint, graph.graph_expression, state, graph, {
+      minWidth: 280,
+      minHeight: 180,
+      emptyHint: 'Graph preview for expressions in x.'
+    });
+
+    if(zoomIn){ zoomIn.addEventListener('click', ()=>{ state.zoom = Math.max(0.25, Math.min(8, state.zoom * 1.2)); redraw(); }); }
+    if(zoomOut){ zoomOut.addEventListener('click', ()=>{ state.zoom = Math.max(0.25, Math.min(8, state.zoom / 1.2)); redraw(); }); }
+    if(reset){
+      reset.addEventListener('click', ()=>{
+        state.zoom = 1;
+        state.offsetX = 0;
+        state.offsetY = 0;
+        state.boundsInitialized = false;
+        redraw();
+      });
+    }
+
+    canvas.addEventListener('wheel', (e)=>{
+      e.preventDefault();
+      const multiplier = e.deltaY > 0 ? (1 / 1.2) : 1.2;
+      state.zoom = Math.max(0.25, Math.min(8, state.zoom * multiplier));
+      redraw();
+    }, { passive: false });
+
+    canvas.addEventListener('pointerdown', (e)=>{
+      state.isDragging = true;
+      state.dragX = e.clientX;
+      state.dragY = e.clientY;
+      canvas.setPointerCapture(e.pointerId);
+    });
+    canvas.addEventListener('pointermove', (e)=>{
+      if(!state.isDragging) return;
+      const dx = e.clientX - state.dragX;
+      const dy = e.clientY - state.dragY;
+      state.dragX = e.clientX;
+      state.dragY = e.clientY;
+      const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+      state.offsetX += dx * dpr;
+      state.offsetY += dy * dpr;
+      redraw();
+    });
+    const stopDrag = ()=>{ state.isDragging = false; };
+    canvas.addEventListener('pointerup', stopDrag);
+    canvas.addEventListener('pointercancel', stopDrag);
+    canvas.addEventListener('pointerleave', stopDrag);
+
+    if(typeof ResizeObserver !== 'undefined'){
+      const observer = new ResizeObserver(()=>redraw());
+      observer.observe(card);
+      messageGraphObservers.set(card, observer);
+    }
+
+    card.__graphMounted = true;
+    renderMath(card);
+    redraw();
+  }
+
+  function syncMessageGraph(msgWrap, item = null){
+    if(!msgWrap) return;
+    if(item && item.graph){
+      try{
+        msgWrap.setAttribute('data-graph', JSON.stringify(item.graph));
+      }catch(_){ /* noop */ }
+    }else if(item && !item.graph){
+      msgWrap.removeAttribute('data-graph');
+    }
+
+    const bubble = msgWrap.querySelector('.bubble');
+    const textEl = bubble ? bubble.querySelector('.text') : null;
+    if(!bubble || !textEl) return;
+
+    const graph = normalizeMessageGraph((item && item.graph) || readGraphFromNode(msgWrap));
+    let card = bubble.querySelector('.msg-graph-card');
+    if(!graph){
+      if(card){
+        const observer = messageGraphObservers.get(card);
+        if(observer){ observer.disconnect(); messageGraphObservers.delete(card); }
+        card.remove();
+      }
+      return;
+    }
+
+    const signature = JSON.stringify(graph);
+    if(card && card.dataset.graphSignature !== signature){
+      const observer = messageGraphObservers.get(card);
+      if(observer){ observer.disconnect(); messageGraphObservers.delete(card); }
+      card.remove();
+      card = null;
+    }
+
+    if(!card){
+      card = buildMessageGraphCard(graph);
+      card.dataset.graphSignature = signature;
+      const tools = bubble.querySelector('.bubble-tools');
+      if(tools){ bubble.insertBefore(card, tools); }
+      else{ bubble.appendChild(card); }
+      mountMessageGraphCard(card, graph);
+      return;
+    }
+  }
+
   function appendMsg(it){
     if(it && it.RowKey && !String(it.RowKey).startsWith('temp-') && seen.has(it.RowKey)) return; // dedupe real rows
 
@@ -605,6 +836,7 @@
           if(bubble){
             upsertMessageAttachment(bubble, it);
           }
+          syncMessageGraph(node, it);
           seen.delete(tempKey);
           seen.add(it.RowKey);
         }
@@ -625,6 +857,11 @@
       wrap.setAttribute('data-rk', it.RowKey);
       if (String(it.RowKey).startsWith('temp-')) { wrap.setAttribute('data-temp', '1'); }
       seen.add(it.RowKey);
+    }
+    if(it && it.graph){
+      try{
+        wrap.setAttribute('data-graph', JSON.stringify(it.graph));
+      }catch(_){ /* noop */ }
     }
 
     const avatar = document.createElement('div');
@@ -684,6 +921,7 @@
     wrap.appendChild(avatar);
     wrap.appendChild(bubble);
     messagesEl.appendChild(wrap);
+    syncMessageGraph(wrap, it);
 
     // Trigger entrance animation
     requestAnimationFrame(()=>{
@@ -1668,19 +1906,45 @@
     return step * pow;
   }
 
-  function updateCalcGraph(expr){
-    if(!calcGraph || !calcGraphHint) return;
-    const ctx = calcGraph.getContext('2d');
-    const rect = calcGraph.getBoundingClientRect();
-    const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
-    const drawW = Math.max(300, Math.floor(rect.width * dpr));
-    const drawH = Math.max(140, Math.floor(rect.height * dpr));
-    if(calcGraph.width !== drawW || calcGraph.height !== drawH){
-      calcGraph.width = drawW;
-      calcGraph.height = drawH;
+  function applyGraphBounds(state, graph, width, height){
+    if(!state || !graph || state.boundsInitialized) return;
+    const xMin = Number(graph.graph_x_min);
+    const xMax = Number(graph.graph_x_max);
+    const yMin = Number(graph.graph_y_min);
+    const yMax = Number(graph.graph_y_max);
+    const hasX = Number.isFinite(xMin) && Number.isFinite(xMax) && xMax > xMin;
+    const hasY = Number.isFinite(yMin) && Number.isFinite(yMax) && yMax > yMin;
+    if(hasX){
+      state.baseScaleX = Math.max(10, width / (xMax - xMin));
+      state.offsetX = (-xMin * state.baseScaleX) - (width / 2);
+      if(!hasY){
+        state.baseScaleY = state.baseScaleX;
+      }
     }
-    const w = calcGraph.width;
-    const h = calcGraph.height;
+    if(hasY){
+      state.baseScaleY = Math.max(10, height / (yMax - yMin));
+      state.offsetY = (yMax * state.baseScaleY) - (height / 2);
+    }
+    state.boundsInitialized = true;
+  }
+
+  function drawExpressionGraph(canvas, hintEl, expr, state, graphMeta = null, options = {}){
+    if(!canvas || !hintEl || !state) return;
+    const ctx = canvas.getContext('2d');
+    const rect = canvas.getBoundingClientRect();
+    const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+    const minWidth = Number(options.minWidth) || 300;
+    const minHeight = Number(options.minHeight) || 140;
+    const drawW = Math.max(minWidth, Math.floor(rect.width * dpr));
+    const drawH = Math.max(minHeight, Math.floor(rect.height * dpr));
+    if(canvas.width !== drawW || canvas.height !== drawH){
+      canvas.width = drawW;
+      canvas.height = drawH;
+    }
+    const w = canvas.width;
+    const h = canvas.height;
+    applyGraphBounds(state, graphMeta, w, h);
+
     ctx.clearRect(0, 0, w, h);
     ctx.fillStyle = 'rgba(148,163,184,0.08)';
     ctx.fillRect(0, 0, w, h);
@@ -1691,22 +1955,23 @@
       ctx.lineWidth = 1;
       ctx.beginPath(); ctx.moveTo(0, h/2); ctx.lineTo(w, h/2); ctx.stroke();
       ctx.beginPath(); ctx.moveTo(w/2, 0); ctx.lineTo(w/2, h); ctx.stroke();
-      calcGraphHint.textContent = 'Graph preview for expressions (example: x^2-4 or 6x+5=14).';
-      calcGraphHint.classList.add('muted');
+      hintEl.textContent = options.emptyHint || 'Graph preview for expressions (example: x^2-4 or 6x+5=14).';
+      hintEl.classList.add('muted');
       return;
     }
     let fn;
     try{
       fn = new Function('x', `return ${parsed};`);
     }catch(_){
-      calcGraphHint.textContent = 'Unable to plot this expression yet.';
-      calcGraphHint.classList.remove('muted');
+      hintEl.textContent = 'Unable to plot this expression yet.';
+      hintEl.classList.remove('muted');
       return;
     }
-    const scaleX = graphState.baseScaleX * graphState.zoom;
-    const scaleY = graphState.baseScaleY * graphState.zoom;
-    const centerX = w/2 + graphState.offsetX;
-    const centerY = h/2 + graphState.offsetY;
+
+    const scaleX = state.baseScaleX * state.zoom;
+    const scaleY = state.baseScaleY * state.zoom;
+    const centerX = w/2 + state.offsetX;
+    const centerY = h/2 + state.offsetY;
     const xMin = -centerX / scaleX;
     const xMax = (w - centerX) / scaleX;
     const yMin = -(h - centerY) / scaleY;
@@ -1777,8 +2042,35 @@
       else{ ctx.lineTo(px, py); }
     }
     ctx.stroke();
-    calcGraphHint.textContent = `Graph preview (x: ${xMin.toFixed(2)} to ${xMax.toFixed(2)}). Drag to pan, wheel or +/- to zoom.`;
-    calcGraphHint.classList.add('muted');
+
+    if(graphMeta && graphMeta.graph_x_label){
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'bottom';
+      ctx.fillStyle = 'rgba(188,202,221,0.8)';
+      ctx.fillText(graphMeta.graph_x_label, w - (12 * dpr), h - (8 * dpr));
+    }
+    if(graphMeta && graphMeta.graph_y_label){
+      ctx.save();
+      ctx.translate(12 * dpr, 14 * dpr);
+      ctx.rotate(-Math.PI / 2);
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+      ctx.fillStyle = 'rgba(188,202,221,0.8)';
+      ctx.fillText(graphMeta.graph_y_label, 0, 0);
+      ctx.restore();
+    }
+
+    const customHint = graphMeta && String(graphMeta.graph_hint || '').trim();
+    hintEl.textContent = customHint || `Graph preview (x: ${xMin.toFixed(2)} to ${xMax.toFixed(2)}). Drag to pan, wheel or +/- to zoom.`;
+    hintEl.classList.add('muted');
+  }
+
+  function updateCalcGraph(expr){
+    drawExpressionGraph(calcGraph, calcGraphHint, expr, graphState, null, {
+      minWidth: 300,
+      minHeight: 140,
+      emptyHint: 'Graph preview for expressions (example: x^2-4 or 6x+5=14).'
+    });
   }
 
   function zoomGraph(multiplier){

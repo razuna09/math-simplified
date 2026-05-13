@@ -20,6 +20,11 @@
         <button id="themeToggle" class="btn btn-ghost small" type="button">Dark Mode</button>
         {% endif %}
         {% if is_logged_in %}
+        <a class="btn btn-ghost small feed-icon-btn" href="{{ url_for('changefeed') }}" title="Change feed" aria-label="Open change feed">
+          <svg class="feed-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M3 11a7 7 0 0 1 14 0v1h2a2 2 0 0 1 2 2v4h-2v-4h-4v-3a5 5 0 0 0-10 0v3H3v-3zm2 5h10v2H5v-2z"></path>
+          </svg>
+        </a>
         <button id="profileToggle" class="profile-pill" type="button" title="Open profile settings" aria-expanded="false" aria-controls="profileDrawer">
           <span class="profile-pill-avatar">{{ (current_username or "U")[0]|upper }}</span>
           <span class="profile-pill-text">

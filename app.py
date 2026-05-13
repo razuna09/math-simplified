@@ -329,6 +329,8 @@ APP_VERSION = os.getenv("APP_VERSION", "")
 ADMIN_SESSION_ID = os.getenv("ADMIN_SESSION_ID", "999000999")
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123")
+FORMSPREE_REGISTER_ENDPOINT = os.getenv("FORMSPREE_REGISTER_ENDPOINT", "https://formspree.io/f/meevznlj").strip()
+FORMSPREE_SUPPORT_ENDPOINT = os.getenv("FORMSPREE_SUPPORT_ENDPOINT", "https://formspree.io/f/mqewlnqj").strip()
 # N8N webhooks
 N8N_TEST_WEBHOOK = os.getenv("N8N_WEBHOOK_URL", "")
 N8N_PROD_WEBHOOK = os.getenv("N8N_WEBHOOK_URL_PROD", "")
@@ -363,6 +365,7 @@ REGISTER_TABLE = "registerchatapp"  # users
 CHATS_TABLE = "chat"                # chat messages
 CONFIG_TABLE = "appconfig"          # app-wide config (announcements, maintenance)
 CONTACT_TABLE = "contactrequests"   # registration/support intake
+CHANGEFEED_TABLE = "changefeed"     # admin-authored change feed articles
 
 # In-memory flags/caches for snappy checks without hitting Azure on each request
 INIT_DONE = False
@@ -464,6 +467,11 @@ def _read_chat_image_locally(blob_name: str) -> bytes:
     path = _local_blob_abspath(blob_name)
     with open(path, "rb") as fh:
         return fh.read()
+
+def _delete_chat_image_locally(blob_name: str):
+    path = _local_blob_abspath(blob_name)
+    if os.path.isfile(path):
+        os.remove(path)
 
 def _rfc1123_now():
     return datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S GMT")
@@ -657,9 +665,16 @@ def upload_chat_image_to_blob(upload, session_id):
         "size": len(raw),
     }
 
+def upload_changefeed_image_to_blob(upload):
+    # Reuse the existing upload pipeline and storage container/prefix.
+    # We separate blob path by a fixed pseudo-session id.
+    if not upload or not getattr(upload, "filename", ""):
+        return None
+    return upload_chat_image_to_blob(upload, "changefeed")
+
 def init_tables():
     svc = _svc()
-    for name in [REGISTER_TABLE, CHATS_TABLE, CONFIG_TABLE, CONTACT_TABLE]:
+    for name in [REGISTER_TABLE, CHATS_TABLE, CONFIG_TABLE, CONTACT_TABLE, CHANGEFEED_TABLE]:
         try:
             svc.create_table(table_name=name)
         except ResourceExistsError:
@@ -711,6 +726,157 @@ def json_dt_default(value):
     if isinstance(value, datetime):
         return to_utc_iso_z(value)
     raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+def _coerce_graph_payload(raw):
+    if isinstance(raw, dict):
+        return dict(raw)
+    if not isinstance(raw, str):
+        return {}
+    text = raw.strip()
+    if not text:
+        return {}
+    try:
+        data = json.loads(text)
+    except Exception:
+        return {}
+    return dict(data) if isinstance(data, dict) else {}
+
+def _normalize_graph_value(value):
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+def _normalize_graph_number(value):
+    if value is None or value == "":
+        return None
+    try:
+        num = float(value)
+    except Exception:
+        return None
+    if num != num or num in (float("inf"), float("-inf")):
+        return None
+    return num
+
+def normalize_message_graph(entity) -> dict | None:
+    if not isinstance(entity, dict):
+        return None
+    payload = _coerce_graph_payload(
+        entity.get("graph_payload")
+        or entity.get("graph_json")
+        or entity.get("graph")
+    )
+    merged = {}
+    merged.update(payload)
+    merged.update({k: v for k, v in entity.items() if v not in (None, "")})
+
+    graph_type = _normalize_graph_value(
+        merged.get("graph_type")
+        or merged.get("type")
+    )
+    expression = _normalize_graph_value(
+        merged.get("graph_expression")
+        or merged.get("expression")
+        or merged.get("function")
+    )
+    title = _normalize_graph_value(
+        merged.get("graph_title")
+        or merged.get("title")
+    )
+    subtitle = _normalize_graph_value(
+        merged.get("graph_subtitle")
+        or merged.get("subtitle")
+    )
+    hint = _normalize_graph_value(
+        merged.get("graph_hint")
+        or merged.get("hint")
+    )
+
+    if not graph_type and expression:
+        graph_type = "function"
+    if graph_type != "function" or not expression:
+        return None
+
+    graph = {
+        "graph_type": "function",
+        "graph_expression": expression,
+    }
+    if title:
+        graph["graph_title"] = title
+    if subtitle:
+        graph["graph_subtitle"] = subtitle
+    if hint:
+        graph["graph_hint"] = hint
+
+    for source_key, target_key in [
+        ("graph_x_label", "graph_x_label"),
+        ("graph_y_label", "graph_y_label"),
+        ("x_label", "graph_x_label"),
+        ("y_label", "graph_y_label"),
+    ]:
+        value = _normalize_graph_value(merged.get(source_key))
+        if value and target_key not in graph:
+            graph[target_key] = value
+
+    for source_key, target_key in [
+        ("graph_x_min", "graph_x_min"),
+        ("graph_x_max", "graph_x_max"),
+        ("graph_y_min", "graph_y_min"),
+        ("graph_y_max", "graph_y_max"),
+        ("x_min", "graph_x_min"),
+        ("x_max", "graph_x_max"),
+        ("y_min", "graph_y_min"),
+        ("y_max", "graph_y_max"),
+    ]:
+        value = _normalize_graph_number(merged.get(source_key))
+        if value is not None and target_key not in graph:
+            graph[target_key] = value
+
+    return graph
+
+GRAPH_REQUEST_RE = re.compile(r"\b(graph|plot|draw|display|visuali[sz]e|curve)\b", re.IGNORECASE)
+GRAPH_LATEX_RE = re.compile(r"\$\$([^$]+)\$\$|\$([^$]+)\$")
+
+def message_requests_graph(text: str) -> bool:
+    return bool(GRAPH_REQUEST_RE.search(str(text or "")))
+
+def extract_graph_expression_from_text(text: str, fallback_text: str = "") -> str | None:
+    raw = str(text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not raw:
+        return None
+    expr = re.sub(r"\s+", " ", raw)
+    patterns = [
+        r"^\s*(?:can|could|would)\s+you\s+",
+        r"^\s*(?:please\s+)?(?:show|draw|display|visuali(?:s|z)e|plot|graph)\s+(?:me\s+)?(?:the\s+)?(?:graph|plot|function)?\s*(?:of\s+)?",
+        r"^\s*(?:i\s+want\s+)?(?:a\s+)?(?:graph|plot)\s+(?:of\s+)?",
+        r"^\s*what\s+does\s+(?:the\s+)?(?:graph|plot)\s+(?:of\s+)?",
+    ]
+    for pattern in patterns:
+        expr = re.sub(pattern, "", expr, flags=re.IGNORECASE)
+    expr = re.sub(r"^y\s*=\s*", "", expr, flags=re.IGNORECASE)
+    expr = re.sub(r"^f\s*\(\s*x\s*\)\s*=\s*", "", expr, flags=re.IGNORECASE)
+    expr = re.sub(r"[?.!,]+$", "", expr).strip()
+    if re.search(r"(x|\\theta)", expr, re.IGNORECASE):
+        return expr
+
+    fallback = str(fallback_text or "")
+    match = GRAPH_LATEX_RE.search(fallback)
+    if match:
+        candidate = str(match.group(1) or match.group(2) or "").strip()
+        if re.search(r"(x|\\theta)", candidate, re.IGNORECASE):
+            return candidate
+    return None
+
+def build_inferred_graph(text: str, fallback_text: str = "") -> dict | None:
+    expr = extract_graph_expression_from_text(text, fallback_text=fallback_text)
+    if not expr:
+        return None
+    return {
+        "graph_type": "function",
+        "graph_expression": expr,
+        "graph_title": f"Graph of {expr}",
+        "graph_hint": "Graph preview generated from the request. Drag to pan, wheel or +/- to zoom.",
+    }
 
 def clean_ocr_text(text: str) -> str:
     raw = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
@@ -1639,6 +1805,123 @@ def authenticate(username: str, password: str):
         return u
     return None
 
+# ------------- Change feed (admin-authored articles) -------------
+def _changefeed_table():
+    return _table(CHANGEFEED_TABLE)
+
+def list_changefeed_items(limit: int = 100):
+    tbl = _changefeed_table()
+    try:
+        items = list(
+            tbl.query_entities(
+                "PartitionKey eq 'FEED'",
+                select=[
+                    "PartitionKey", "RowKey", "created_at", "updated_at",
+                    "title", "body",
+                    "image_url", "image_filename", "image_container", "image_blob_name", "image_mime", "image_size",
+                ],
+            )
+        )
+    except Exception:
+        items = []
+    def _dt(ent):
+        return parse_utc_dt(ent.get("created_at")) or parse_utc_dt(ent.get("Timestamp")) or datetime.min.replace(tzinfo=timezone.utc)
+    items.sort(key=_dt, reverse=True)
+    out = []
+    for ent in items[: max(1, int(limit or 100))]:
+        rk = ent.get("RowKey")
+        image_blob_name = str(ent.get("image_blob_name") or "").strip()
+        image_preview_url = str(ent.get("image_url") or "").strip()
+        if rk and image_blob_name:
+            try:
+                image_preview_url = url_for("changefeed_image_proxy", row_key=rk)
+            except Exception:
+                pass
+        out.append(
+            {
+                "RowKey": rk,
+                "title": ent.get("title") or "",
+                "body": ent.get("body") or "",
+                "created_at": to_utc_iso_z(ent.get("created_at")) or to_utc_iso_z(ent.get("Timestamp")) or utc_now_iso(),
+                "updated_at": to_utc_iso_z(ent.get("updated_at")) or "",
+                "image_url": str(ent.get("image_url") or "").strip(),
+                "image_preview_url": image_preview_url,
+                "image_filename": str(ent.get("image_filename") or "").strip(),
+                "image_container": str(ent.get("image_container") or "").strip(),
+                "image_blob_name": image_blob_name,
+                "image_mime": str(ent.get("image_mime") or "").strip(),
+                "image_size": ent.get("image_size"),
+            }
+        )
+    return out
+
+def get_changefeed_item(row_key: str):
+    if not row_key:
+        return None
+    try:
+        return _changefeed_table().get_entity(partition_key="FEED", row_key=row_key)
+    except Exception:
+        return None
+
+def create_changefeed_item(title: str, body: str, image_info=None):
+    title = str(title or "").strip()
+    body = str(body or "").strip()
+    if not title:
+        raise ValueError("Title is required.")
+    if not body:
+        raise ValueError("Body is required.")
+    row_key = f"{int(datetime.now(timezone.utc).timestamp() * 1000)}_{uuid.uuid4().hex}"
+    ent = {
+        "PartitionKey": "FEED",
+        "RowKey": row_key,
+        "title": title,
+        "body": body,
+        "created_at": utc_now_iso(),
+        "updated_at": utc_now_iso(),
+    }
+    if isinstance(image_info, dict):
+        image_url = str(image_info.get("blob_url") or "").strip()
+        image_filename = str(image_info.get("filename") or "").strip()
+        image_container = str(image_info.get("container") or "").strip()
+        image_blob_name = str(image_info.get("blob_name") or "").strip()
+        image_mime = str(image_info.get("mime") or "").strip()
+        image_size = image_info.get("size")
+        if image_url:
+            ent["image_url"] = image_url
+        if image_filename:
+            ent["image_filename"] = image_filename
+        if image_container:
+            ent["image_container"] = image_container
+        if image_blob_name:
+            ent["image_blob_name"] = image_blob_name
+        if image_mime:
+            ent["image_mime"] = image_mime
+        try:
+            if image_size is not None:
+                ent["image_size"] = int(image_size)
+        except Exception:
+            pass
+    _changefeed_table().create_entity(ent)
+    return ent
+
+def delete_changefeed_item(row_key: str):
+    ent = get_changefeed_item(row_key)
+    if not ent:
+        return False
+    container_name = str(ent.get("image_container") or CHAT_IMAGE_CONTAINER).strip()
+    blob_name = str(ent.get("image_blob_name") or "").strip()
+    # Delete entity first (so UI updates even if blob cleanup fails)
+    _changefeed_table().delete_entity(partition_key="FEED", row_key=row_key)
+    if blob_name:
+        try:
+            if container_name == LOCAL_CHAT_IMAGE_CONTAINER:
+                _delete_chat_image_locally(blob_name)
+            elif BLOB_AVAILABLE:
+                _blob_container(container_name).get_blob_client(blob_name).delete_blob()
+        except Exception:
+            pass
+    return True
+
 
 def save_contact_request(kind: str, name: str, email: str, message: str, extra=None):
     tbl = _table(CONTACT_TABLE)
@@ -1657,6 +1940,34 @@ def save_contact_request(kind: str, name: str, email: str, message: str, extra=N
             entity[str(key)] = str(value).strip() if isinstance(value, str) else value
     tbl.create_entity(entity=entity)
     return entity
+
+
+def submit_formspree_request(endpoint: str, payload: dict):
+    url = str(endpoint or "").strip()
+    if not url:
+        return None
+    resp = requests.post(
+        url,
+        data=payload,
+        headers={"Accept": "application/json"},
+        timeout=15,
+    )
+    if resp.status_code >= 400:
+        detail = ""
+        try:
+            data = resp.json()
+            if isinstance(data, dict):
+                if data.get("errors"):
+                    detail = "; ".join(
+                        str(item.get("message") or item)
+                        for item in data.get("errors", [])
+                    )
+                else:
+                    detail = str(data.get("error") or data.get("message") or "").strip()
+        except Exception:
+            detail = (resp.text or "").strip()
+        raise RuntimeError(detail or f"Form submission failed with status {resp.status_code}.")
+    return resp
 
 def post_message(session_id: str, sender: str, text: str, attachment=None):
     tbl = _table(CHATS_TABLE)
@@ -1729,11 +2040,17 @@ def list_messages_v2(session_id: str, since_iso=None, limit: int = 200):
             "image_size": ent.get("image_size"),
             "created_at": to_utc_iso_z(dt),
         }
+        graph = normalize_message_graph(ent)
+        if graph:
+            obj["graph"] = graph
         entries.append((dt, 1 if sender == "assistant" else 0, rowkey or "", obj))
 
     query_fields = [
         "PartitionKey", "RowKey", "sender", "text", "sendto", "Timestamp", "created_at",
         "image_url", "image_filename", "image_container", "image_blob_name", "image_mime", "image_size",
+        "graph_type", "graph_expression", "graph_title", "graph_subtitle", "graph_hint",
+        "graph_x_label", "graph_y_label", "graph_x_min", "graph_x_max", "graph_y_min", "graph_y_max",
+        "graph_payload", "graph_json",
     ]
 
     # User rows (PartitionKey == session_id)
@@ -1770,6 +2087,20 @@ def list_messages_v2(session_id: str, since_iso=None, limit: int = 200):
 
     # Strict chronological order; for same timestamp keep user before assistant, then RowKey
     entries.sort(key=lambda t: (t[0], t[1], t[2]))
+
+    pending_graph = None
+    for _, _, _, msg in entries:
+        sender = str(msg.get("sender") or "")
+        if sender == "user":
+            if message_requests_graph(msg.get("text", "")):
+                pending_graph = build_inferred_graph(msg.get("text", ""))
+            else:
+                pending_graph = None
+            continue
+        if sender == "assistant":
+            if not msg.get("graph") and pending_graph:
+                msg["graph"] = dict(pending_graph)
+            pending_graph = None
 
     if since_iso:
         sdt = parse_utc_dt(since_iso)
@@ -1958,6 +2289,17 @@ def register_interest_contact():
             message=message,
             extra={"institution": institution},
         )
+        submit_formspree_request(
+            FORMSPREE_REGISTER_ENDPOINT,
+            {
+                "name": name,
+                "email": email,
+                "institution": institution,
+                "message": message,
+                "form_type": "register_interest",
+                "_subject": f"Registration request from {name}",
+            },
+        )
         flash("Registration request submitted. Dr. Rama will review it and contact you.", "success")
     except Exception as e:
         flash(f"Could not submit registration request: {str(e)}", "error")
@@ -1981,6 +2323,17 @@ def support_contact():
             email=email,
             message=message,
             extra={"topic": topic},
+        )
+        submit_formspree_request(
+            FORMSPREE_SUPPORT_ENDPOINT,
+            {
+                "name": name,
+                "email": email,
+                "topic": topic,
+                "message": message,
+                "form_type": "support",
+                "_subject": f"Support request from {name}",
+            },
         )
         flash("Support request submitted. We will get back to you soon.", "success")
     except Exception as e:
@@ -2438,6 +2791,45 @@ def chat_image_proxy(row_key):
     return resp
 
 
+@app.route("/changefeed/image/<row_key>")
+def changefeed_image_proxy(row_key):
+    if not session.get("username"):
+        return Response(status=401)
+    ent = get_changefeed_item(row_key)
+    if not ent:
+        return Response(status=404)
+    blob_name = str(ent.get("image_blob_name") or "").strip()
+    if not blob_name:
+        return Response(status=404)
+    container_name = str(ent.get("image_container") or CHAT_IMAGE_CONTAINER).strip() or CHAT_IMAGE_CONTAINER
+    image_mime = str(ent.get("image_mime") or "").strip() or "application/octet-stream"
+    try:
+        if container_name == LOCAL_CHAT_IMAGE_CONTAINER:
+            raw = _read_chat_image_locally(blob_name)
+        elif BLOB_AVAILABLE:
+            blob = _blob_container(container_name).get_blob_client(blob_name)
+            raw = blob.download_blob().readall()
+        else:
+            raw = _download_blob_via_rest(
+                conn_str=_blob_conn_str(),
+                container_name=container_name,
+                blob_name=blob_name,
+            )
+    except Exception:
+        return Response(status=404)
+    resp = Response(raw, mimetype=image_mime)
+    resp.headers["Cache-Control"] = "private, max-age=300"
+    return resp
+
+
+@app.route("/changes")
+def changefeed():
+    if not session.get("username"):
+        return redirect(url_for("login"))
+    items = list_changefeed_items(limit=80)
+    return render_template("change_feed.html", title="Change Feed", items=items)
+
+
 @app.route("/chat/sse")
 def chat_sse():
     if not session.get("username"):
@@ -2584,8 +2976,45 @@ def admin_dashboard():
         "webhook_prod_url": N8N_PROD_WEBHOOK,
         "webhook_current_url": get_webhook_url(),
         "admin_now_utc": utc_now_iso(),
+        "changefeed_items": list_changefeed_items(limit=60),
     }
     return render_template("admin.html", **ctx)
+
+
+@app.route("/admin/changefeed/create", methods=["POST"])
+def admin_changefeed_create():
+    if not session.get("is_admin"):
+        return redirect(url_for("login"))
+    title = (request.form.get("title") or "").strip()
+    body = (request.form.get("body") or "").strip()
+    upload = request.files.get("image")
+    image_info = None
+    try:
+        if upload and upload.filename:
+            image_info = upload_changefeed_image_to_blob(upload)
+        create_changefeed_item(title=title, body=body, image_info=image_info)
+        flash("Change feed entry created.", "success")
+    except Exception as exc:
+        flash("Failed to create change feed entry: " + str(exc), "error")
+    return redirect(url_for("admin_dashboard") + "#changefeed")
+
+
+@app.route("/admin/changefeed/delete", methods=["POST"])
+def admin_changefeed_delete():
+    if not session.get("is_admin"):
+        return redirect(url_for("login"))
+    row_key = (request.form.get("row_key") or "").strip()
+    try:
+        if not row_key:
+            raise ValueError("Missing row key.")
+        ok = delete_changefeed_item(row_key)
+        if ok:
+            flash("Change feed entry deleted.", "success")
+        else:
+            flash("Change feed entry not found.", "error")
+    except Exception as exc:
+        flash("Failed to delete change feed entry: " + str(exc), "error")
+    return redirect(url_for("admin_dashboard") + "#changefeed")
 
 @app.route("/admin/create_account", methods=["POST"])
 def admin_create_account():
